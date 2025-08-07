@@ -28,35 +28,52 @@ interface ScheduleResponse {
 const BUS_STOPS: BusStop[] = [
   {
     id: 'home-to-city',
-    name: 'Home → City',
+    name: '🏠 Home → 🏙️ City',
     stopId: '255',
     route: 'G6',
     description: 'From Home to City Center'
   },
   {
     id: 'city-to-home',
-    name: 'City → Home',
+    name: '🏙️ City → 🏠 Home',
     stopId: '359',
     route: 'G6',
     description: 'From City Center to Home'
   },
   {
     id: 'office-to-home',
-    name: 'Office → Home',
+    name: '🏢 Office → 🏠 Home',
     stopId: '347',
     route: 'G6',
     description: 'From Office to Home'
+  },
+  {
+    id: 'school-to-city',
+    name: '🏫 School → 🏙️ City',
+    stopId: '326',
+    route: 'G6',
+    description: 'From School to City Center'
+  },
+  {
+    id: 'school-to-home',
+    name: '🏫 School → 🏠 Home',
+    stopId: '327',
+    route: 'G6',
+    description: 'From School to Home'
   }
 ];
 
 export default function Home() {
   const [schedules, setSchedules] = useState<Record<string, ScheduleResponse | null>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
+  const [failed, setFailed] = useState<Record<string, boolean>>({});
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
-  const [currentTime, setCurrentTime] = useState<string>(format(new Date(), 'HH:mm:ss'));
+  const [currentTime, setCurrentTime] = useState<string>('');
+  const [isClient, setIsClient] = useState<boolean>(false);
 
   const fetchSchedule = async (busStop: BusStop) => {
     setLoading(prev => ({ ...prev, [busStop.id]: true }));
+    setFailed(prev => ({ ...prev, [busStop.id]: false }));
     
     try {
       const today = format(new Date(), 'yyyy-MM-dd');
@@ -64,9 +81,11 @@ export default function Home() {
       const data = await response.json();
       
       setSchedules(prev => ({ ...prev, [busStop.id]: data }));
+      setFailed(prev => ({ ...prev, [busStop.id]: false }));
     } catch (error) {
       console.error(`Error fetching schedule for ${busStop.name}:`, error);
       setSchedules(prev => ({ ...prev, [busStop.id]: null }));
+      setFailed(prev => ({ ...prev, [busStop.id]: true }));
     } finally {
       setLoading(prev => ({ ...prev, [busStop.id]: false }));
     }
@@ -80,6 +99,10 @@ export default function Home() {
   };
 
   useEffect(() => {
+    // Set client flag to true after component mounts
+    setIsClient(true);
+    setCurrentTime(format(new Date(), 'HH:mm:ss'));
+    
     fetchAllSchedules();
     
     // Update clock every second
@@ -90,9 +113,7 @@ export default function Home() {
     return () => clearInterval(timer);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const getCurrentTime = () => {
-    return format(new Date(), 'HH:mm:ss');
-  };
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
@@ -105,11 +126,11 @@ export default function Home() {
             Your simplified Maribor bus schedule
           </p>
           <p className="text-sm text-gray-500 mt-2">
-            Current time: {currentTime} • Last updated: {format(lastUpdated, 'HH:mm')}
+            Current time: {isClient ? currentTime : '--:--:--'} • Last updated: {format(lastUpdated, 'HH:mm')}
           </p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-3 max-w-6xl mx-auto">
+        <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 max-w-7xl mx-auto">
           {BUS_STOPS.map((busStop) => (
             <div
               key={busStop.id}
@@ -132,6 +153,18 @@ export default function Home() {
                 <div className="flex items-center justify-center py-8">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
                   <span className="ml-2 text-gray-600">Loading...</span>
+                </div>
+              ) : failed[busStop.id] ? (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-red-800 text-sm">
+                    ❌ Failed to load schedule
+                  </p>
+                  <button
+                    onClick={() => fetchSchedule(busStop)}
+                    className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline"
+                  >
+                    Try again
+                  </button>
                 </div>
               ) : schedules[busStop.id] ? (
                 <div className="space-y-3">
@@ -183,16 +216,10 @@ export default function Home() {
                   )}
                 </div>
               ) : (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-red-800 text-sm">
-                    ❌ Failed to load schedule
+                <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                  <p className="text-gray-600 text-sm">
+                    ⏳ Waiting to load...
                   </p>
-                  <button
-                    onClick={() => fetchSchedule(busStop)}
-                    className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline"
-                  >
-                    Try again
-                  </button>
                 </div>
               )}
 
