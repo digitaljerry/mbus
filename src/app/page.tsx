@@ -1,103 +1,243 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useEffect } from 'react';
+import { format } from 'date-fns';
+
+interface Schedule {
+  time: string;
+  destination?: string;
+}
+
+interface BusStop {
+  id: string;
+  name: string;
+  stopId: string;
+  route: string;
+  description: string;
+}
+
+interface ScheduleResponse {
+  stop: string;
+  route: string;
+  date: string;
+  schedules: Schedule[];
+  url: string;
+  note?: string;
+}
+
+const BUS_STOPS: BusStop[] = [
+  {
+    id: 'home-to-city',
+    name: 'Home → City',
+    stopId: '255',
+    route: 'G6',
+    description: 'From Home to City Center'
+  },
+  {
+    id: 'city-to-home',
+    name: 'City → Home',
+    stopId: '359',
+    route: 'G6',
+    description: 'From City Center to Home'
+  },
+  {
+    id: 'office-to-home',
+    name: 'Office → Home',
+    stopId: '347',
+    route: 'G6',
+    description: 'From Office to Home'
+  }
+];
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [schedules, setSchedules] = useState<Record<string, ScheduleResponse | null>>({});
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
+  const [currentTime, setCurrentTime] = useState<string>(format(new Date(), 'HH:mm:ss'));
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const fetchSchedule = async (busStop: BusStop) => {
+    setLoading(prev => ({ ...prev, [busStop.id]: true }));
+    
+    try {
+      const today = format(new Date(), 'yyyy-MM-dd');
+      const response = await fetch(`/api/schedules?stop=${busStop.stopId}&route=${busStop.route}&datum=${today}`);
+      const data = await response.json();
+      
+      setSchedules(prev => ({ ...prev, [busStop.id]: data }));
+    } catch (error) {
+      console.error(`Error fetching schedule for ${busStop.name}:`, error);
+      setSchedules(prev => ({ ...prev, [busStop.id]: null }));
+    } finally {
+      setLoading(prev => ({ ...prev, [busStop.id]: false }));
+    }
+  };
+
+  const fetchAllSchedules = async () => {
+    setLastUpdated(new Date());
+    for (const busStop of BUS_STOPS) {
+      await fetchSchedule(busStop);
+    }
+  };
+
+  useEffect(() => {
+    fetchAllSchedules();
+    
+    // Update clock every second
+    const timer = setInterval(() => {
+      setCurrentTime(format(new Date(), 'HH:mm:ss'));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const getCurrentTime = () => {
+    return format(new Date(), 'HH:mm:ss');
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      <div className="container mx-auto px-4 py-8">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold text-gray-800 mb-2">
+            🚌 MBus 🚌
+          </h1>
+          <p className="text-gray-600">
+            Your simplified Maribor bus schedule
+          </p>
+          <p className="text-sm text-gray-500 mt-2">
+            Current time: {currentTime} • Last updated: {format(lastUpdated, 'HH:mm')}
+          </p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+        <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-3 max-w-6xl mx-auto">
+          {BUS_STOPS.map((busStop) => (
+            <div
+              key={busStop.id}
+              className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-blue-500"
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-gray-800">
+                  {busStop.name}
+                </h2>
+                <span className="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+                  Route {busStop.route}
+                </span>
+              </div>
+              
+              <p className="text-gray-600 text-sm mb-4">
+                {busStop.description}
+              </p>
+
+              {loading[busStop.id] ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                  <span className="ml-2 text-gray-600">Loading...</span>
+                </div>
+              ) : schedules[busStop.id] ? (
+                <div className="space-y-3">
+                  <h3 className="font-medium text-gray-700 flex items-center gap-2">
+                    🕐 Next departures:
+                  </h3>
+                  
+                  {schedules[busStop.id]?.note && (
+                    <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                      <p className="text-blue-800 text-xs">
+                        ℹ️ {schedules[busStop.id]!.note}
+                      </p>
+                    </div>
+                  )}
+                  
+                  {schedules[busStop.id]?.schedules?.length ? (
+                    schedules[busStop.id]!.schedules.map((schedule, index) => (
+                      <div
+                        key={index}
+                        className={`p-3 rounded-lg ${
+                          index === 0
+                            ? 'bg-green-50 border border-green-200'
+                            : 'bg-gray-50 border border-gray-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-2xl font-bold text-gray-800">
+                            {schedule.time}
+                          </span>
+                          {index === 0 && (
+                            <span className="text-xs bg-green-500 text-white px-2 py-1 rounded-full">
+                              NEXT
+                            </span>
+                          )}
+                        </div>
+                        {schedule.destination && (
+                          <p className="text-sm text-gray-600 mt-1">
+                            → {schedule.destination}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <p className="text-yellow-800 text-sm">
+                        😴 No more buses today or couldn&apos;t fetch schedule
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
+                  <p className="text-red-800 text-sm">
+                    ❌ Failed to load schedule
+                  </p>
+                  <button
+                    onClick={() => fetchSchedule(busStop)}
+                    className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline"
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
+
+              {schedules[busStop.id]?.url && (
+                <div className="mt-4 pt-3 border-t border-gray-200">
+                  <a
+                    href={schedules[busStop.id]!.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-gray-500 hover:text-gray-700 underline"
+                  >
+                    🔗 View original schedule
+                  </a>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-center mt-8 mb-8">
+          <button
+            onClick={fetchAllSchedules}
+            className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
+          >
+            🔄 Refresh Schedules
+          </button>
+        </div>
+
+        <div className="text-center mt-12 text-gray-500 text-sm">
+          <p>
+            🚌 Built with ❤️ for simpler public transport in Maribor
+          </p>
+          <p className="mt-1">
+            Data from{' '}
+            <a
+              href="https://vozniredi.marprom.si/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 underline"
+            >
+              Marprom
+            </a>
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
