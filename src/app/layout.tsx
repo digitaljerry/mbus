@@ -17,6 +17,18 @@ export const metadata: Metadata = {
   description: "Your simplified Maribor bus schedule - see next departures for your favorite stops",
   icons: {
     icon: '/favicon.svg',
+    apple: '/favicon.svg',
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'MBus',
+  },
+  viewport: {
+    width: 'device-width',
+    initialScale: 1,
+    maximumScale: 1,
+    userScalable: false,
   },
 };
 
