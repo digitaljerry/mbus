@@ -187,16 +187,27 @@ export default function Home() {
                         className={`p-3 rounded-lg ${
                           index === 0
                             ? 'bg-green-50 border border-green-200'
+                            : index === 1
+                            ? 'bg-blue-50 border border-blue-200'
                             : 'bg-gray-50 border border-gray-200'
                         }`}
                       >
                         <div className="flex items-center justify-between">
-                          <span className="text-2xl font-bold text-gray-800">
+                          <span className={`text-2xl font-bold ${
+                            index === 0 ? 'text-green-800' : 
+                            index === 1 ? 'text-blue-800' : 
+                            'text-gray-800'
+                          }`}>
                             {schedule.time}
                           </span>
                           {index === 0 && (
                             <span className="text-xs bg-green-500 text-white px-2 py-1 rounded-full">
                               NEXT
+                            </span>
+                          )}
+                          {index === 1 && (
+                            <span className="text-xs bg-blue-500 text-white px-2 py-1 rounded-full">
+                              SOON
                             </span>
                           )}
                         </div>

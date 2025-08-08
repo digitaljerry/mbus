@@ -30,6 +30,8 @@ const MOCK_SCHEDULES: Record<string, string[]> = {
   '255': ['07:15', '07:45', '08:15', '08:45', '09:15', '09:45', '10:15', '10:45', '11:15', '11:45', '12:15', '12:45', '13:15', '13:45', '14:15', '14:45', '15:15', '15:45', '16:15', '16:45', '17:15', '17:45', '18:15', '18:45', '19:15', '19:45', '20:15', '20:45'],
   '359': ['07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '21:00'],
   '347': ['07:20', '07:50', '08:20', '08:50', '09:20', '09:50', '10:20', '10:50', '11:20', '11:50', '12:20', '12:50', '13:20', '13:50', '14:20', '14:50', '15:20', '15:50', '16:20', '16:50', '17:20', '17:50', '18:20', '18:50', '19:20', '19:50', '20:20'],
+  '326': ['07:10', '07:40', '08:10', '08:40', '09:10', '09:40', '10:10', '10:40', '11:10', '11:40', '12:10', '12:40', '13:10', '13:40', '14:10', '14:40', '15:10', '15:40', '16:10', '16:40', '17:10', '17:40', '18:10', '18:40', '19:10', '19:40', '20:10'],
+  '327': ['07:25', '07:55', '08:25', '08:55', '09:25', '09:55', '10:25', '10:55', '11:25', '11:55', '12:25', '12:55', '13:25', '13:55', '14:25', '14:55', '15:25', '15:55', '16:25', '16:55', '17:25', '17:55', '18:25', '18:55', '19:25', '19:55', '20:25'],
   '157': ['07:10', '07:40', '08:10', '08:40', '09:10', '09:40', '10:10', '10:40', '11:10', '11:40', '12:10', '12:40', '13:10', '13:40', '14:10', '14:40', '15:10', '15:40', '16:10', '16:40', '17:10', '17:40', '18:10', '18:40', '19:10', '19:40', '20:10'],
   '158': ['07:25', '07:55', '08:25', '08:55', '09:25', '09:55', '10:25', '10:55', '11:25', '11:55', '12:25', '12:55', '13:25', '13:55', '14:25', '14:55', '15:25', '15:55', '16:25', '16:55', '17:25', '17:55', '18:25', '18:55', '19:25', '19:55', '20:25']
 };
@@ -87,8 +89,9 @@ export async function GET(request: NextRequest) {
           
           $(selector).each((index, element) => {
             const text = $(element).text().trim();
-            const timeMatch = text.match(/\b(\d{1,2}:\d{2})\b/);
-            if (timeMatch && timeMatch[1] !== '00:00') {
+            // Extract ALL time matches from the text, not just the first one
+            const allTimeMatches = text.match(/\b(\d{1,2}:\d{2})\b/g);
+            if (allTimeMatches && allTimeMatches.length > 0) {
               // Try to find route information in the surrounding context
               const $element = $(element);
               const rowText = $element.closest('tr').text().trim();
@@ -131,15 +134,20 @@ export async function GET(request: NextRequest) {
                 }
               }
               
-              log(`⏰ Found time: ${timeMatch[1]} in text: "${text}" | Row: "${rowText}" | Route: ${routeInfo} | Is G6: ${isG6Route}`);
-              
-              schedules.push({
-                time: timeMatch[1],
-                destination: text.replace(timeMatch[1], '').trim() || undefined,
-                routeInfo: routeInfo,
-                isG6Route: isG6Route,
-                fullText: text,
-                rowText: rowText
+              // Create separate schedule entries for each time found
+              allTimeMatches.forEach(timeStr => {
+                if (timeStr !== '00:00') {
+                  log(`⏰ Found time: ${timeStr} in text: "${text}" | Row: "${rowText}" | Route: ${routeInfo} | Is G6: ${isG6Route}`);
+                  
+                  schedules.push({
+                    time: timeStr,
+                    destination: undefined, // Don't include other times as destination
+                    routeInfo: routeInfo,
+                    isG6Route: isG6Route,
+                    fullText: text,
+                    rowText: rowText
+                  });
+                }
               });
             }
           });
@@ -201,14 +209,14 @@ export async function GET(request: NextRequest) {
     const futureSchedules = cleanSchedules
       .filter(schedule => schedule.time > currentTime)
       .sort((a, b) => a.time.localeCompare(b.time))
-      .slice(0, 2);
+      .slice(0, 3);
     
-    log(`⏭️ Future schedules (next 2): ${futureSchedules.map(s => s.time).join(', ')}`);
+    log(`⏭️ Future schedules (next 3): ${futureSchedules.map(s => s.time).join(', ')}`);
 
-    // If no future schedules for today, get first two of tomorrow
+    // If no future schedules for today, get first three of tomorrow
     if (futureSchedules.length === 0) {
       log('🌙 No future schedules for today, showing tomorrow\'s first departures');
-      const allSchedules = cleanSchedules.sort((a, b) => a.time.localeCompare(b.time)).slice(0, 2);
+      const allSchedules = cleanSchedules.sort((a, b) => a.time.localeCompare(b.time)).slice(0, 3);
       log(`🌅 Tomorrow's first departures: ${allSchedules.map(s => s.time).join(', ')}`);
       
       const result = {
@@ -246,7 +254,7 @@ export async function GET(request: NextRequest) {
     
     const futureSchedules = mockTimes
       .filter(time => time > currentTime)
-      .slice(0, 2)
+      .slice(0, 3)
       .map(time => ({ time }));
 
     log(`⏭️ Fallback future schedules: ${futureSchedules.map(s => s.time).join(', ')}`);
