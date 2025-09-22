@@ -70,6 +70,7 @@ export default function Home() {
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
   const [currentTime, setCurrentTime] = useState<string>('');
   const [isClient, setIsClient] = useState<boolean>(false);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   const fetchSchedule = async (busStop: BusStop) => {
     setLoading(prev => ({ ...prev, [busStop.id]: true }));
@@ -92,9 +93,12 @@ export default function Home() {
   };
 
   const fetchAllSchedules = async () => {
-    setLastUpdated(new Date());
-    for (const busStop of BUS_STOPS) {
-      await fetchSchedule(busStop);
+    setRefreshing(true);
+    try {
+      await Promise.allSettled(BUS_STOPS.map((busStop) => fetchSchedule(busStop)));
+    } finally {
+      setLastUpdated(new Date());
+      setRefreshing(false);
     }
   };
 
@@ -253,9 +257,10 @@ export default function Home() {
         <div className="flex justify-center mt-8 mb-8">
           <button
             onClick={fetchAllSchedules}
-            className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
+            disabled={refreshing}
+            className="bg-blue-500 hover:bg-blue-600 disabled:hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
           >
-            🔄 Refresh Schedules
+            {refreshing ? '⏳ Refreshing…' : '🔄 Refresh Schedules'}
           </button>
         </div>
 

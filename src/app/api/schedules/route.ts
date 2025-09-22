@@ -2,8 +2,21 @@ import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
-// Debug flag - set to true to enable detailed logging
-const DEBUG = true;
+// Debug flag - derived from environment so production logs stay quiet
+const DEBUG = process.env.NODE_ENV !== 'production';
+
+const CACHE_TTL_MS = 60 * 1000; // cache schedules for one minute per stop/route/date
+
+interface ScheduleResponsePayload {
+  stop: string;
+  route: string;
+  date: string;
+  schedules: Schedule[];
+  url: string;
+  note?: string;
+}
+
+const scheduleCache = new Map<string, { timestamp: number; payload: ScheduleResponsePayload }>();
 
 interface ScrapedSchedule {
   time: string;
@@ -79,6 +92,17 @@ export async function GET(request: NextRequest) {
   if (!stop || !route) {
     log('❌ Missing parameters:', { stop, route });
     return NextResponse.json({ error: 'Missing stop or route parameter' }, { status: 400 });
+  }
+
+  const cacheKey = `${stop}-${route}-${datum}`;
+  const cached = scheduleCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    log('🗃️ Serving schedules from cache');
+    return NextResponse.json(cached.payload);
+  }
+
+  if (cached) {
+    scheduleCache.delete(cacheKey);
   }
 
   try {
@@ -254,7 +278,7 @@ export async function GET(request: NextRequest) {
         .slice(0, 3);
       log(`🌅 Tomorrow's first departures: ${allSchedules.map(s => s.time).join(', ')}`);
       
-      const result = {
+      const result: ScheduleResponsePayload = {
         stop,
         route,
         date: datum,
@@ -262,17 +286,19 @@ export async function GET(request: NextRequest) {
         url,
         note: 'No more buses today - showing tomorrow\'s first departures'
       };
+      scheduleCache.set(cacheKey, { timestamp: Date.now(), payload: result });
       log('📤 Returning result (tomorrow):', result);
       return NextResponse.json(result);
     }
 
-    const result = {
+    const result: ScheduleResponsePayload = {
       stop,
       route,
       date: datum,
       schedules: futureSchedules,
       url
     };
+    scheduleCache.set(cacheKey, { timestamp: Date.now(), payload: result });
     log('📤 Returning result (today):', result);
     return NextResponse.json(result);
 
@@ -296,7 +322,7 @@ export async function GET(request: NextRequest) {
 
     log(`⏭️ Fallback future schedules: ${futureSchedules.map(s => s.time).join(', ')}`);
 
-    const fallbackResult = { 
+    const fallbackResult: ScheduleResponsePayload = { 
       stop,
       route,
       date: datum,
@@ -304,6 +330,7 @@ export async function GET(request: NextRequest) {
       url: `https://vozniredi.marprom.si/?stop=${stop}&datum=${datum}&route=${route}`,
       note: 'Using sample data - real-time data unavailable'
     };
+    scheduleCache.set(cacheKey, { timestamp: Date.now(), payload: fallbackResult });
     log('📤 Returning fallback result:', fallbackResult);
     return NextResponse.json(fallbackResult);
   }
