@@ -6,6 +6,7 @@ import * as cheerio from 'cheerio';
 const DEBUG = process.env.NODE_ENV !== 'production';
 
 const CACHE_TTL_MS = 60 * 1000; // cache schedules for one minute per stop/route/date
+const LOCAL_TIME_ZONE = 'Europe/Ljubljana';
 
 interface ScheduleResponsePayload {
   stop: string;
@@ -68,6 +69,39 @@ const timeToMinutes = (time: string): number => {
   }
 
   return hours * 60 + minutes;
+};
+
+const getCurrentTimeInfo = (timeZone: string) => {
+  try {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+
+    const formatted = formatter.format(new Date());
+    const [hourStr, minuteStr] = formatted.split(':');
+    const hours = Number(hourStr);
+    const minutes = Number(minuteStr);
+
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+      throw new Error('Invalid time components');
+    }
+
+    return {
+      formatted,
+      minutes: hours * 60 + minutes
+    };
+  } catch (error) {
+    console.error('❌ Failed to format current time with timezone, falling back to server time:', error);
+    const now = new Date();
+    const formatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    return {
+      formatted,
+      minutes: now.getHours() * 60 + now.getMinutes()
+    };
+  }
 };
 
 // Mock data for demonstration - in a real app, you'd want to scrape or use an API
@@ -257,9 +291,7 @@ export async function GET(request: NextRequest) {
     }));
 
     // Filter and sort schedules to get next departures
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    const { formatted: currentTime, minutes: currentMinutes } = getCurrentTimeInfo(LOCAL_TIME_ZONE);
     log(`🕐 Current time: ${currentTime}`);
     log(`📋 All schedules before filtering: ${cleanSchedules.map(s => s.time).join(', ')}`);
     
@@ -308,10 +340,8 @@ export async function GET(request: NextRequest) {
     // Fallback to mock data
     log('🔄 Using fallback mock data due to major error');
     const mockTimes = MOCK_SCHEDULES[stop] || ['08:00', '08:30'];
-    const now = new Date();
-    const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    log(`🕐 Fallback current time: ${currentTime}`);
+      const { formatted: currentTime, minutes: currentMinutes } = getCurrentTimeInfo(LOCAL_TIME_ZONE);
+      log(`🕐 Fallback current time: ${currentTime}`);
     log(`📦 Fallback mock times: ${mockTimes.join(', ')}`);
     
     const futureSchedules = mockTimes
