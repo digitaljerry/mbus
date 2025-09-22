@@ -7,6 +7,13 @@ const DEBUG = process.env.NODE_ENV !== 'production';
 
 const CACHE_TTL_MS = 60 * 1000; // cache schedules for one minute per stop/route/date
 const LOCAL_TIME_ZONE = 'Europe/Ljubljana';
+const DEBUG_TARGET = {
+  stop: '359',
+  route: 'G6',
+  date: '2025-09-22'
+};
+
+let debugActiveForRequest = false;
 
 interface ScheduleResponsePayload {
   stop: string;
@@ -34,40 +41,75 @@ interface Schedule {
 }
 
 const log = (...args: unknown[]) => {
-  if (DEBUG) {
+  if (DEBUG && debugActiveForRequest) {
     console.log(...args);
   }
 };
 
-const normalizeTime = (time: string): string => {
-  const match = time.match(/^(\d{1,2}):(\d{2})/);
+const logError = (...args: unknown[]) => {
+  if (DEBUG && debugActiveForRequest) {
+    console.error(...args);
+  }
+};
+
+const extractHourMinute = (time: string) => {
+  const trimmed = time.trim();
+  const match = trimmed.match(/(\d{1,2})\D+(\d{2})/);
   if (!match) {
-    return time;
+    return null;
   }
 
   const hours = Number(match[1]);
   const minutes = Number(match[2]);
 
   if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return null;
+  }
+
+  return { hours, minutes };
+};
+
+const extractTimesFromText = (text: string): string[] => {
+  const normalized = text.replace(/\s+/g, ' ');
+  const times: string[] = [];
+  const pattern = /(?<!\d)(\d{1,2})([:.,h]?)(\d{2})(?!\d)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(normalized)) !== null) {
+    const hours = Number(match[1]);
+    const minutes = Number(match[3]);
+
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+      continue;
+    }
+
+    if (hours >= 24 || minutes >= 60) {
+      continue;
+    }
+
+    times.push(`${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`);
+  }
+
+  return times;
+};
+
+const normalizeTime = (time: string): string => {
+  const extracted = extractHourMinute(time);
+  if (!extracted) {
     return time;
   }
 
+  const { hours, minutes } = extracted;
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 };
 
 const timeToMinutes = (time: string): number => {
-  const match = time.match(/^(\d{1,2}):(\d{2})/);
-  if (!match) {
+  const extracted = extractHourMinute(time);
+  if (!extracted) {
     return Number.POSITIVE_INFINITY;
   }
 
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-
-  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-    return Number.POSITIVE_INFINITY;
-  }
-
+  const { hours, minutes } = extracted;
   return hours * 60 + minutes;
 };
 
@@ -94,7 +136,7 @@ const getCurrentTimeInfo = (timeZone: string) => {
       minutes: hours * 60 + minutes
     };
   } catch (error) {
-    console.error('❌ Failed to format current time with timezone, falling back to server time:', error);
+    logError('❌ Failed to format current time with timezone, falling back to server time:', error);
     const now = new Date();
     const formatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     return {
@@ -121,25 +163,35 @@ export async function GET(request: NextRequest) {
   const route = searchParams.get('route');
   const datum = searchParams.get('datum') || new Date().toISOString().split('T')[0];
 
-  log('🚌 API Request:', { stop, route, datum });
+  const previousDebugState = debugActiveForRequest;
+  debugActiveForRequest = Boolean(
+    DEBUG &&
+    stop === DEBUG_TARGET.stop &&
+    route === DEBUG_TARGET.route &&
+    datum === DEBUG_TARGET.date
+  );
 
-  if (!stop || !route) {
-    log('❌ Missing parameters:', { stop, route });
-    return NextResponse.json({ error: 'Missing stop or route parameter' }, { status: 400 });
-  }
-
-  const cacheKey = `${stop}-${route}-${datum}`;
-  const cached = scheduleCache.get(cacheKey);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-    log('🗃️ Serving schedules from cache');
-    return NextResponse.json(cached.payload);
-  }
-
-  if (cached) {
-    scheduleCache.delete(cacheKey);
-  }
+  let cacheKey = '';
 
   try {
+    log('🚌 API Request:', { stop, route, datum });
+
+    if (!stop || !route) {
+      log('❌ Missing parameters:', { stop, route });
+      return NextResponse.json({ error: 'Missing stop or route parameter' }, { status: 400 });
+    }
+
+    cacheKey = `${stop}-${route}-${datum}`;
+    const cached = scheduleCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      log('🗃️ Serving schedules from cache');
+      return NextResponse.json(cached.payload);
+    }
+
+    if (cached) {
+      scheduleCache.delete(cacheKey);
+    }
+
     const url = `https://vozniredi.marprom.si/?stop=${stop}&datum=${datum}&route=${route}`;
     log('🌐 Fetching URL:', url);
     let schedules: ScrapedSchedule[] = [];
@@ -169,6 +221,8 @@ export async function GET(request: NextRequest) {
         'div:contains(":")'
       ];
 
+      const processedRows = new Set<Element>();
+
       log('🔍 Trying selectors to find schedule data...');
       
       for (const selector of selectors) {
@@ -178,13 +232,24 @@ export async function GET(request: NextRequest) {
           log(`📊 Found ${elements.length} elements for selector: ${selector}`);
           
           $(selector).each((index, element) => {
-            const text = $(element).text().trim();
-            // Extract ALL time matches from the text, not just the first one
-            const allTimeMatches = text.match(/\b(\d{1,2}:\d{2})\b/g);
-            if (allTimeMatches && allTimeMatches.length > 0) {
+            const $element = $(element);
+            const rowElement = $element.closest('tr').get(0);
+            if (!rowElement) {
+              return;
+            }
+            if (processedRows.has(rowElement)) {
+              return;
+            }
+
+            processedRows.add(rowElement);
+
+            const rowText = $(rowElement).text().trim();
+            const allTimeMatches = extractTimesFromText(rowText);
+
+            log('🧾 Row match count:', allTimeMatches.length, 'Row sample:', rowText.slice(0, 120));
+
+            if (allTimeMatches.length > 0) {
               // Try to find route information in the surrounding context
-              const $element = $(element);
-              const rowText = $element.closest('tr').text().trim();
               const parentText = $element.parent().text().trim();
               
               // Look for G6 route indicators - only full route descriptions
@@ -207,7 +272,7 @@ export async function GET(request: NextRequest) {
               
               // Check for G6 specific routes
               for (const indicator of g6RouteIndicators) {
-                if (rowText.includes(indicator) || parentText.includes(indicator) || text.includes(indicator)) {
+                if (rowText.includes(indicator) || parentText.includes(indicator)) {
                   routeInfo = indicator;
                   isG6Route = true;
                   break;
@@ -217,7 +282,7 @@ export async function GET(request: NextRequest) {
               // If not G6, check what other route it might be (for debugging)
               if (!isG6Route) {
                 for (const indicator of allRouteIndicators) {
-                  if (rowText.includes(indicator) || parentText.includes(indicator) || text.includes(indicator)) {
+                  if (rowText.includes(indicator) || parentText.includes(indicator)) {
                     routeInfo = indicator;
                     break;
                   }
@@ -227,14 +292,14 @@ export async function GET(request: NextRequest) {
               // Create separate schedule entries for each time found
               allTimeMatches.forEach(timeStr => {
                 if (timeStr !== '00:00') {
-                  log(`⏰ Found time: ${timeStr} in text: "${text}" | Row: "${rowText}" | Route: ${routeInfo} | Is G6: ${isG6Route}`);
+                  log(`⏰ Found time: ${timeStr} | Route: ${routeInfo} | Is G6: ${isG6Route}`);
                   
                   schedules.push({
                     time: timeStr,
                     destination: undefined, // Don't include other times as destination
                     routeInfo: routeInfo,
                     isG6Route: isG6Route,
-                    fullText: text,
+                    fullText: rowText,
                     rowText: rowText
                   });
                 }
@@ -335,12 +400,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json(result);
 
   } catch (error) {
-    console.error('❌ Major error in API:', error);
-    
+    logError('❌ Major error in API:', error);
+
     // Fallback to mock data
     log('🔄 Using fallback mock data due to major error');
     const mockTimes = MOCK_SCHEDULES[stop] || ['08:00', '08:30'];
-      const { formatted: currentTime, minutes: currentMinutes } = getCurrentTimeInfo(LOCAL_TIME_ZONE);
+    const { formatted: currentTime, minutes: currentMinutes } = getCurrentTimeInfo(LOCAL_TIME_ZONE);
       log(`🕐 Fallback current time: ${currentTime}`);
     log(`📦 Fallback mock times: ${mockTimes.join(', ')}`);
     
@@ -363,5 +428,7 @@ export async function GET(request: NextRequest) {
     scheduleCache.set(cacheKey, { timestamp: Date.now(), payload: fallbackResult });
     log('📤 Returning fallback result:', fallbackResult);
     return NextResponse.json(fallbackResult);
+  } finally {
+    debugActiveForRequest = previousDebugState;
   }
 }
