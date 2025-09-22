@@ -36,6 +36,10 @@ Ready to deploy to Vercel:
 npm run build
 ```
 
+## Contributing
+
+New contributors should review the [Repository Guidelines](AGENTS.md) for project structure, tooling, and review expectations before opening a pull request.
+
 ## Tech Stack
 
 - Next.js 14 with App Router

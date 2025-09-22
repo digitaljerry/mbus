@@ -25,6 +25,38 @@ const log = (...args: unknown[]) => {
   }
 };
 
+const normalizeTime = (time: string): string => {
+  const match = time.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) {
+    return time;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return time;
+  }
+
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+};
+
+const timeToMinutes = (time: string): number => {
+  const match = time.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return hours * 60 + minutes;
+};
+
 // Mock data for demonstration - in a real app, you'd want to scrape or use an API
 const MOCK_SCHEDULES: Record<string, string[]> = {
   '255': ['07:15', '07:45', '08:15', '08:45', '09:15', '09:45', '10:15', '10:45', '11:15', '11:45', '12:15', '12:45', '13:15', '13:45', '14:15', '14:45', '15:15', '15:45', '16:15', '16:45', '17:15', '17:45', '18:15', '18:45', '19:15', '19:45', '20:15', '20:45'],
@@ -196,19 +228,20 @@ export async function GET(request: NextRequest) {
 
     // Convert to clean Schedule objects for filtering
     const cleanSchedules: Schedule[] = schedules.map(s => ({
-      time: s.time,
+      time: normalizeTime(s.time),
       destination: s.destination
     }));
 
     // Filter and sort schedules to get next departures
     const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
     const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     log(`🕐 Current time: ${currentTime}`);
     log(`📋 All schedules before filtering: ${cleanSchedules.map(s => s.time).join(', ')}`);
     
     const futureSchedules = cleanSchedules
-      .filter(schedule => schedule.time > currentTime)
-      .sort((a, b) => a.time.localeCompare(b.time))
+      .filter(schedule => timeToMinutes(schedule.time) > currentMinutes)
+      .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time))
       .slice(0, 3);
     
     log(`⏭️ Future schedules (next 3): ${futureSchedules.map(s => s.time).join(', ')}`);
@@ -216,7 +249,9 @@ export async function GET(request: NextRequest) {
     // If no future schedules for today, get first three of tomorrow
     if (futureSchedules.length === 0) {
       log('🌙 No future schedules for today, showing tomorrow\'s first departures');
-      const allSchedules = cleanSchedules.sort((a, b) => a.time.localeCompare(b.time)).slice(0, 3);
+      const allSchedules = [...cleanSchedules]
+        .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time))
+        .slice(0, 3);
       log(`🌅 Tomorrow's first departures: ${allSchedules.map(s => s.time).join(', ')}`);
       
       const result = {
@@ -248,12 +283,14 @@ export async function GET(request: NextRequest) {
     log('🔄 Using fallback mock data due to major error');
     const mockTimes = MOCK_SCHEDULES[stop] || ['08:00', '08:30'];
     const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
     const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     log(`🕐 Fallback current time: ${currentTime}`);
     log(`📦 Fallback mock times: ${mockTimes.join(', ')}`);
     
     const futureSchedules = mockTimes
-      .filter(time => time > currentTime)
+      .map(normalizeTime)
+      .filter(time => timeToMinutes(time) > currentMinutes)
       .slice(0, 3)
       .map(time => ({ time }));
 
