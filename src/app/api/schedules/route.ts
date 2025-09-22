@@ -172,6 +172,8 @@ export async function GET(request: NextRequest) {
   );
 
   let cacheKey = '';
+  let stopId = '';
+  let routeId = '';
 
   try {
     log('🚌 API Request:', { stop, route, datum });
@@ -181,7 +183,10 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing stop or route parameter' }, { status: 400 });
     }
 
-    cacheKey = `${stop}-${route}-${datum}`;
+    stopId = stop as string;
+    routeId = route as string;
+
+    cacheKey = `${stopId}-${routeId}-${datum}`;
     const cached = scheduleCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       log('🗃️ Serving schedules from cache');
@@ -192,7 +197,7 @@ export async function GET(request: NextRequest) {
       scheduleCache.delete(cacheKey);
     }
 
-    const url = `https://vozniredi.marprom.si/?stop=${stop}&datum=${datum}&route=${route}`;
+    const url = `https://vozniredi.marprom.si/?stop=${stopId}&datum=${datum}&route=${routeId}`;
     log('🌐 Fetching URL:', url);
     let schedules: ScrapedSchedule[] = [];
 
@@ -221,7 +226,7 @@ export async function GET(request: NextRequest) {
         'div:contains(":")'
       ];
 
-      const processedRows = new Set<Element>();
+      const processedRows = new WeakSet<object>();
 
       log('🔍 Trying selectors to find schedule data...');
       
@@ -238,11 +243,11 @@ export async function GET(request: NextRequest) {
             if (!rowElement) {
               return;
             }
-            if (processedRows.has(rowElement)) {
+            if (processedRows.has(rowElement as object)) {
               return;
             }
 
-            processedRows.add(rowElement);
+            processedRows.add(rowElement as object);
 
             const rowText = $(rowElement).text().trim();
             const allTimeMatches = extractTimesFromText(rowText);
@@ -298,11 +303,11 @@ export async function GET(request: NextRequest) {
                   schedules.push({
                     time: timeStr,
                     destination: undefined, // Don't include other times as destination
-                    routeInfo: routeInfo,
-                    isG6Route: isG6Route,
-                    fullText: rowText,
-                    rowText: rowText
-                  });
+                  routeInfo: routeInfo,
+                  isG6Route: isG6Route,
+                  fullText: rowText,
+                  rowText: rowText
+                });
                   foundForSelector = true;
                 }
               });
@@ -390,8 +395,8 @@ export async function GET(request: NextRequest) {
     }
 
     const result: ScheduleResponsePayload = {
-      stop,
-      route,
+      stop: stopId,
+      route: routeId,
       date: datum,
       schedules: futureSchedules,
       url
@@ -405,7 +410,7 @@ export async function GET(request: NextRequest) {
 
     // Fallback to mock data
     log('🔄 Using fallback mock data due to major error');
-    const mockTimes = MOCK_SCHEDULES[stop] || ['08:00', '08:30'];
+    const mockTimes = MOCK_SCHEDULES[stopId] || ['08:00', '08:30'];
     const { formatted: currentTime, minutes: currentMinutes } = getCurrentTimeInfo(LOCAL_TIME_ZONE);
       log(`🕐 Fallback current time: ${currentTime}`);
     log(`📦 Fallback mock times: ${mockTimes.join(', ')}`);
@@ -419,11 +424,11 @@ export async function GET(request: NextRequest) {
     log(`⏭️ Fallback future schedules: ${futureSchedules.map(s => s.time).join(', ')}`);
 
     const fallbackResult: ScheduleResponsePayload = { 
-      stop,
-      route,
+      stop: stopId,
+      route: routeId,
       date: datum,
       schedules: futureSchedules,
-      url: `https://vozniredi.marprom.si/?stop=${stop}&datum=${datum}&route=${route}`,
+      url: `https://vozniredi.marprom.si/?stop=${stopId}&datum=${datum}&route=${routeId}`,
       note: 'Using sample data - real-time data unavailable'
     };
     if (cacheKey) {
