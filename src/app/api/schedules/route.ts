@@ -226,12 +226,13 @@ export async function GET(request: NextRequest) {
       log('🔍 Trying selectors to find schedule data...');
       
       for (const selector of selectors) {
-        if (schedules.length === 0) {
-          log(`🎯 Trying selector: ${selector}`);
-          const elements = $(selector);
-          log(`📊 Found ${elements.length} elements for selector: ${selector}`);
-          
-          $(selector).each((index, element) => {
+        log(`🎯 Trying selector: ${selector}`);
+        const elements = $(selector);
+        log(`📊 Found ${elements.length} elements for selector: ${selector}`);
+
+        let foundForSelector = false;
+
+        $(selector).each((index, element) => {
             const $element = $(element);
             const rowElement = $element.closest('tr').get(0);
             if (!rowElement) {
@@ -302,15 +303,15 @@ export async function GET(request: NextRequest) {
                     fullText: rowText,
                     rowText: rowText
                   });
+                  foundForSelector = true;
                 }
               });
             }
           });
-          
-          if (schedules.length > 0) {
-            log(`✅ Found ${schedules.length} schedules with selector: ${selector}`);
-            break;
-          }
+
+        if (foundForSelector && schedules.length > 0) {
+          log(`✅ Found ${schedules.length} schedules with selector: ${selector}`);
+          break;
         }
       }
 
@@ -425,7 +426,9 @@ export async function GET(request: NextRequest) {
       url: `https://vozniredi.marprom.si/?stop=${stop}&datum=${datum}&route=${route}`,
       note: 'Using sample data - real-time data unavailable'
     };
-    scheduleCache.set(cacheKey, { timestamp: Date.now(), payload: fallbackResult });
+    if (cacheKey) {
+      scheduleCache.delete(cacheKey);
+    }
     log('📤 Returning fallback result:', fallbackResult);
     return NextResponse.json(fallbackResult);
   } finally {
