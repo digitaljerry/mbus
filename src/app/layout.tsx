@@ -13,17 +13,23 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "MBus - Simple Transit",
-  description: "Your simplified Maribor bus schedule - see next departures for your favorite stops",
+  title: "MBus - Magic Bus Board",
+  description: "Your magical Maribor bus board - see next departures for your favorite stops",
   icons: {
-    icon: '/favicon.svg',
-    apple: '/favicon.svg',
+    icon: [
+      { url: '/favicon.svg', type: 'image/svg+xml' },
+      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: '/apple-touch-icon.png',
   },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'MBus',
+    title: 'MBus Magic Board',
   },
+  manifest: '/manifest.webmanifest',
+  themeColor: '#2563eb',
   viewport: {
     width: 'device-width',
     initialScale: 1,

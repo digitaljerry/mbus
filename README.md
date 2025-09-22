@@ -1,6 +1,6 @@
-# 🚌 MBus - Simple Transit
+# 🚌 MBus - Magic Bus Board
 
-A cleaner, simpler interface for checking Maribor bus schedules. Built to show you the next two departures for your most important bus stops.
+A cheerful magic board for Maribor bus schedules. Built to show you the next two departures for your most important stops.
 
 ## Features
 
