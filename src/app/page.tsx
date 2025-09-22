@@ -120,7 +120,7 @@ export default function Home() {
 
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div className="min-h-screen bg-gradient-to-br from-amber-50 via-purple-50 to-purple-100">
       <div className="container mx-auto px-4 py-8">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">
@@ -138,13 +138,13 @@ export default function Home() {
           {BUS_STOPS.map((busStop) => (
             <div
               key={busStop.id}
-              className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-blue-500"
+              className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-purple-400"
             >
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-xl font-semibold text-gray-800">
                   {busStop.name}
                 </h2>
-                <span className="text-sm bg-blue-100 text-blue-800 px-2 py-1 rounded-full">
+                <span className="text-sm bg-purple-100 text-purple-800 px-2 py-1 rounded-full">
                   Route {busStop.route}
                 </span>
               </div>
@@ -155,7 +155,7 @@ export default function Home() {
 
               {loading[busStop.id] ? (
                 <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
                   <span className="ml-2 text-gray-600">Loading...</span>
                 </div>
               ) : failed[busStop.id] ? (
@@ -165,7 +165,7 @@ export default function Home() {
                   </p>
                   <button
                     onClick={() => fetchSchedule(busStop)}
-                    className="mt-2 text-sm text-blue-600 hover:text-blue-800 underline"
+                    className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
                   >
                     Try again
                   </button>
@@ -177,8 +177,8 @@ export default function Home() {
                   </h3>
                   
                   {schedules[busStop.id]?.note && (
-                    <div className="mb-3 p-2 bg-blue-50 border border-blue-200 rounded-lg">
-                      <p className="text-blue-800 text-xs">
+                    <div className="mb-3 p-2 bg-purple-50 border border-purple-200 rounded-lg">
+                      <p className="text-purple-800 text-xs">
                         ℹ️ {schedules[busStop.id]!.note}
                       </p>
                     </div>
@@ -190,27 +190,27 @@ export default function Home() {
                         key={index}
                         className={`p-3 rounded-lg ${
                           index === 0
-                            ? 'bg-green-50 border border-green-200'
+                            ? 'bg-amber-100 border border-amber-200'
                             : index === 1
-                            ? 'bg-blue-50 border border-blue-200'
-                            : 'bg-gray-50 border border-gray-200'
+                            ? 'bg-purple-100 border border-purple-200'
+                            : 'bg-slate-100 border border-slate-200'
                         }`}
                       >
                         <div className="flex items-center justify-between">
                           <span className={`text-2xl font-bold ${
-                            index === 0 ? 'text-green-800' : 
-                            index === 1 ? 'text-blue-800' : 
-                            'text-gray-800'
+                            index === 0 ? 'text-amber-900' : 
+                            index === 1 ? 'text-purple-900' : 
+                            'text-slate-800'
                           }`}>
                             {schedule.time}
                           </span>
                           {index === 0 && (
-                            <span className="text-xs bg-green-500 text-white px-2 py-1 rounded-full">
+                            <span className="text-xs bg-amber-500 text-purple-900 px-2 py-1 rounded-full">
                               NEXT
                             </span>
                           )}
                           {index === 1 && (
-                            <span className="text-xs bg-blue-500 text-white px-2 py-1 rounded-full">
+                            <span className="text-xs bg-purple-500 text-white px-2 py-1 rounded-full">
                               SOON
                             </span>
                           )}
@@ -244,7 +244,7 @@ export default function Home() {
                     href={schedules[busStop.id]!.url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-xs text-gray-500 hover:text-gray-700 underline"
+                    className="text-xs text-purple-700 hover:text-purple-900 underline"
                   >
                     🔗 View original schedule
                   </a>
@@ -258,7 +258,7 @@ export default function Home() {
           <button
             onClick={fetchAllSchedules}
             disabled={refreshing}
-            className="bg-blue-500 hover:bg-blue-600 disabled:hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
+            className="bg-purple-600 hover:bg-purple-700 disabled:hover:bg-purple-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
           >
             {refreshing ? '⏳ Refreshing…' : '🔄 Refresh Schedules'}
           </button>
@@ -274,7 +274,7 @@ export default function Home() {
               href="https://vozniredi.marprom.si/"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800 underline"
+              className="text-purple-700 hover:text-purple-900 underline"
             >
               Marprom
             </a>

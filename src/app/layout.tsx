@@ -29,7 +29,7 @@ export const metadata: Metadata = {
     title: 'MBus Magic Board',
   },
   manifest: '/manifest.webmanifest',
-  themeColor: '#2563eb',
+  themeColor: '#6b21a8',
   viewport: {
     width: 'device-width',
     initialScale: 1,
