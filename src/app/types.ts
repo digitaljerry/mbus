@@ -9,6 +9,8 @@ export interface BusStop {
 export interface Schedule {
   time: string;
   destination?: string;
+  delay?: number; // delay in seconds
+  realtime?: boolean; // whether real-time data is available
 }
 
 export interface ScheduleResponse {

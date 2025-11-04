@@ -45,6 +45,23 @@ const DEFAULT_STOPS: BusStop[] = [
   }
 ];
 
+// Helper function to format delay
+const formatDelay = (delaySeconds?: number): { text: string; color: string; bgColor: string } => {
+  if (delaySeconds === undefined || delaySeconds === null) {
+    return { text: '', color: '', bgColor: '' };
+  }
+
+  const delayMinutes = Math.round(delaySeconds / 60);
+  
+  if (delayMinutes <= 0) {
+    return { text: 'On time', color: 'text-green-700', bgColor: 'bg-green-100' };
+  } else if (delayMinutes <= 3) {
+    return { text: `+${delayMinutes} min`, color: 'text-yellow-700', bgColor: 'bg-yellow-100' };
+  } else {
+    return { text: `+${delayMinutes} min`, color: 'text-red-700', bgColor: 'bg-red-100' };
+  }
+};
+
 export default function Home() {
   const [pinnedStops, setPinnedStops] = useState<BusStop[]>([]);
   const [schedules, setSchedules] = useState<Record<string, ScheduleResponse | null>>({});
@@ -236,16 +253,26 @@ export default function Home() {
                           }`}>
                             {schedule.time}
                           </span>
-                          {index === 0 && (
-                            <span className="text-xs bg-amber-500 text-purple-900 px-2 py-1 rounded-full">
-                              NEXT
-                            </span>
-                          )}
-                          {index === 1 && (
-                            <span className="text-xs bg-purple-500 text-white px-2 py-1 rounded-full">
-                              SOON
-                            </span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {schedule.realtime && schedule.delay !== undefined && (() => {
+                              const delayInfo = formatDelay(schedule.delay);
+                              return delayInfo.text ? (
+                                <span className={`text-xs ${delayInfo.color} ${delayInfo.bgColor} px-2 py-1 rounded-full font-medium`}>
+                                  {delayInfo.text}
+                                </span>
+                              ) : null;
+                            })()}
+                            {index === 0 && (
+                              <span className="text-xs bg-amber-500 text-purple-900 px-2 py-1 rounded-full">
+                                NEXT
+                              </span>
+                            )}
+                            {index === 1 && (
+                              <span className="text-xs bg-purple-500 text-white px-2 py-1 rounded-full">
+                                SOON
+                              </span>
+                            )}
+                          </div>
                         </div>
                         {schedule.destination && (
                           <p className="text-sm text-gray-600 mt-1">

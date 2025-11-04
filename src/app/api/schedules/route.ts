@@ -213,7 +213,9 @@ export async function GET(request: NextRequest) {
       
       return {
         time: timeStr,
-        destination: arrival.trip_headsign || undefined
+        destination: arrival.trip_headsign || undefined,
+        delay: arrival.realtime ? arrival.arrival_delay : undefined,
+        realtime: arrival.realtime
       };
     });
 
