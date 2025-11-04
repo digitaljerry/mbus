@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { BusStop } from '../types';
+import { BusStop, StopRoute } from '../types';
 import { loadPinnedStops, addPinnedStop, updatePinnedStop, removePinnedStop } from '../utils/storage';
 
 interface BusStopManagerProps {
@@ -13,11 +13,14 @@ interface BusStopManagerProps {
 export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusStopManagerProps) {
   const [pinnedStops, setPinnedStops] = useState<BusStop[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [formData, setFormData] = useState<Partial<BusStop>>({
+  const [formData, setFormData] = useState<{
+    name: string;
+    description: string;
+    stops: StopRoute[];
+  }>({
     name: '',
-    stopId: '',
-    route: '',
-    description: ''
+    description: '',
+    stops: [{ stopId: '', route: '' }]
   });
 
   useEffect(() => {
@@ -27,18 +30,46 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
     }
   }, [isOpen]);
 
+  const handleAddStopRoute = () => {
+    setFormData({
+      ...formData,
+      stops: [...formData.stops, { stopId: '', route: '' }]
+    });
+  };
+
+  const handleRemoveStopRoute = (index: number) => {
+    if (formData.stops.length > 1) {
+      setFormData({
+        ...formData,
+        stops: formData.stops.filter((_, i) => i !== index)
+      });
+    }
+  };
+
+  const handleStopRouteChange = (index: number, field: 'stopId' | 'route', value: string) => {
+    const newStops = [...formData.stops];
+    newStops[index] = { ...newStops[index], [field]: value };
+    setFormData({ ...formData, stops: newStops });
+  };
+
   const handleAdd = () => {
-    if (!formData.stopId || !formData.route || !formData.name) {
-      alert('Please fill in Stop ID, Route, and Name');
+    if (!formData.name || formData.stops.length === 0) {
+      alert('Please fill in Name and at least one Stop ID/Route combination');
+      return;
+    }
+
+    // Validate all stop/route pairs
+    const validStops = formData.stops.filter(s => s.stopId && s.route);
+    if (validStops.length === 0) {
+      alert('Please fill in at least one valid Stop ID and Route combination');
       return;
     }
 
     const newStop: BusStop = {
       id: `stop-${Date.now()}`,
-      name: formData.name!,
-      stopId: formData.stopId!,
-      route: formData.route!,
-      description: formData.description || ''
+      name: formData.name,
+      stops: validStops,
+      description: formData.description || undefined
     };
 
     addPinnedStop(newStop);
@@ -47,30 +78,35 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
     onStopsChange(updated);
     
     // Reset form
-    setFormData({ name: '', stopId: '', route: '', description: '' });
+    setFormData({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
   };
 
   const handleEdit = (stop: BusStop) => {
     setEditingId(stop.id);
     setFormData({
       name: stop.name,
-      stopId: stop.stopId,
-      route: stop.route,
-      description: stop.description || ''
+      description: stop.description || '',
+      stops: stop.stops.length > 0 ? stop.stops : [{ stopId: '', route: '' }]
     });
   };
 
   const handleUpdate = () => {
-    if (!editingId || !formData.stopId || !formData.route || !formData.name) {
-      alert('Please fill in all required fields');
+    if (!editingId || !formData.name || formData.stops.length === 0) {
+      alert('Please fill in Name and at least one Stop ID/Route combination');
+      return;
+    }
+
+    // Validate all stop/route pairs
+    const validStops = formData.stops.filter(s => s.stopId && s.route);
+    if (validStops.length === 0) {
+      alert('Please fill in at least one valid Stop ID and Route combination');
       return;
     }
 
     updatePinnedStop(editingId, {
-      name: formData.name!,
-      stopId: formData.stopId!,
-      route: formData.route!,
-      description: formData.description || ''
+      name: formData.name,
+      stops: validStops,
+      description: formData.description || undefined
     });
 
     const updated = loadPinnedStops();
@@ -79,7 +115,7 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
     
     // Reset form
     setEditingId(null);
-    setFormData({ name: '', stopId: '', route: '', description: '' });
+    setFormData({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
   };
 
   const handleDelete = (id: string) => {
@@ -93,14 +129,14 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
 
   const handleCancel = () => {
     setEditingId(null);
-    setFormData({ name: '', stopId: '', route: '', description: '' });
+    setFormData({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
   };
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
         <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between">
           <h2 className="text-2xl font-bold text-gray-800">Manage Pinned Bus Stops</h2>
           <button
@@ -125,39 +161,60 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
                 </label>
                 <input
                   type="text"
-                  value={formData.name || ''}
+                  value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   placeholder="e.g., 🏠 Home → 🏙️ City"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Stop ID *
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.stopId || ''}
-                    onChange={(e) => setFormData({ ...formData, stopId: e.target.value })}
-                    placeholder="e.g., 255"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                  />
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Stop/Route Combinations *
+                </label>
+                <div className="space-y-2">
+                  {formData.stops.map((stopRoute, index) => (
+                    <div key={index} className="flex gap-2 items-start">
+                      <div className="flex-1 grid grid-cols-2 gap-2">
+                        <div>
+                          <input
+                            type="text"
+                            value={stopRoute.stopId}
+                            onChange={(e) => handleStopRouteChange(index, 'stopId', e.target.value)}
+                            placeholder="Stop ID (e.g., 255)"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          />
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            value={stopRoute.route}
+                            onChange={(e) => handleStopRouteChange(index, 'route', e.target.value)}
+                            placeholder="Route (e.g., G6)"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                          />
+                        </div>
+                      </div>
+                      {formData.stops.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveStopRoute(index)}
+                          className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-800 rounded-lg transition-colors"
+                          title="Remove this stop/route combination"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
                 </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Route *
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.route || ''}
-                    onChange={(e) => setFormData({ ...formData, route: e.target.value })}
-                    placeholder="e.g., G6"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={handleAddStopRoute}
+                  className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
+                >
+                  + Add another stop/route combination
+                </button>
               </div>
 
               <div>
@@ -166,7 +223,7 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
                 </label>
                 <input
                   type="text"
-                  value={formData.description || ''}
+                  value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                   placeholder="e.g., From Home to City Center"
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
@@ -221,16 +278,20 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <h4 className="font-semibold text-gray-800">{stop.name}</h4>
-                        <div className="mt-1 text-sm text-gray-600">
-                          <span className="inline-block mr-4">
-                            <strong>Stop ID:</strong> {stop.stopId}
-                          </span>
-                          <span className="inline-block mr-4">
-                            <strong>Route:</strong> {stop.route}
-                          </span>
+                        <div className="mt-2 space-y-1">
+                          {stop.stops.map((stopRoute, idx) => (
+                            <div key={idx} className="text-sm text-gray-600">
+                              <span className="inline-block mr-4">
+                                <strong>Stop {idx + 1}:</strong> {stopRoute.stopId}
+                              </span>
+                              <span className="inline-block">
+                                <strong>Route:</strong> {stopRoute.route}
+                              </span>
+                            </div>
+                          ))}
                         </div>
                         {stop.description && (
-                          <p className="mt-1 text-sm text-gray-500">{stop.description}</p>
+                          <p className="mt-2 text-sm text-gray-500">{stop.description}</p>
                         )}
                       </div>
                       <div className="flex gap-2 ml-4">
@@ -258,4 +319,3 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
     </div>
   );
 }
-

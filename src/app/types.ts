@@ -1,8 +1,12 @@
+export interface StopRoute {
+  stopId: string;
+  route: string;
+}
+
 export interface BusStop {
   id: string;
   name: string;
-  stopId: string;
-  route: string;
+  stops: StopRoute[];
   description?: string;
 }
 

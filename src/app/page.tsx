@@ -11,36 +11,43 @@ const DEFAULT_STOPS: BusStop[] = [
   {
     id: 'home-to-city',
     name: '🏠 Home → 🏙️ City',
-    stopId: '255',
-    route: 'G6',
+    stops: [{ stopId: '255', route: 'G6' }],
     description: 'From Home to City Center'
   },
   {
     id: 'city-to-home',
     name: '🏙️ City → 🏠 Home',
-    stopId: '359',
-    route: 'G6',
+    stops: [
+      { stopId: '359', route: 'G6' },
+      { stopId: '359', route: 'P18' }
+    ],
     description: 'From City Center to Home'
   },
   {
     id: 'office-to-home',
     name: '🏢 Office → 🏠 Home',
-    stopId: '347',
-    route: 'G6',
+    stops: [
+      { stopId: '347', route: 'G6' },
+      { stopId: '347', route: 'P18' }
+    ],
     description: 'From Office to Home'
   },
   {
     id: 'school-to-city',
     name: '🏫 School → 🏙️ City',
-    stopId: '326',
-    route: 'G6',
+    stops: [
+      { stopId: '326', route: 'G6' },
+      { stopId: '242', route: 'P18' }
+    ],
     description: 'From School to City Center'
   },
   {
     id: 'school-to-home',
     name: '🏫 School → 🏠 Home',
-    stopId: '327',
-    route: 'G6',
+    stops: [
+      { stopId: '327', route: 'G6' },
+      { stopId: '327', route: 'P18' }
+    ],
     description: 'From School to Home'
   }
 ];
@@ -64,6 +71,7 @@ const formatDelay = (delaySeconds?: number): { text: string; color: string; bgCo
 
 export default function Home() {
   const [pinnedStops, setPinnedStops] = useState<BusStop[]>([]);
+  // Key format: `${busStopId}-${stopId}-${route}` to store schedules for each stop/route combination
   const [schedules, setSchedules] = useState<Record<string, ScheduleResponse | null>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [failed, setFailed] = useState<Record<string, boolean>>({});
@@ -73,30 +81,37 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
 
-  const fetchSchedule = async (busStop: BusStop) => {
-    setLoading(prev => ({ ...prev, [busStop.id]: true }));
-    setFailed(prev => ({ ...prev, [busStop.id]: false }));
+  const fetchSchedule = async (busStopId: string, stopId: string, route: string) => {
+    const scheduleKey = `${busStopId}-${stopId}-${route}`;
+    setLoading(prev => ({ ...prev, [scheduleKey]: true }));
+    setFailed(prev => ({ ...prev, [scheduleKey]: false }));
     
     try {
       const today = format(new Date(), 'yyyy-MM-dd');
-      const response = await fetch(`/api/schedules?stop=${busStop.stopId}&route=${busStop.route}&datum=${today}`);
+      const response = await fetch(`/api/schedules?stop=${stopId}&route=${route}&datum=${today}`);
       const data = await response.json();
       
-      setSchedules(prev => ({ ...prev, [busStop.id]: data }));
-      setFailed(prev => ({ ...prev, [busStop.id]: false }));
+      setSchedules(prev => ({ ...prev, [scheduleKey]: data }));
+      setFailed(prev => ({ ...prev, [scheduleKey]: false }));
     } catch (error) {
-      console.error(`Error fetching schedule for ${busStop.name}:`, error);
-      setSchedules(prev => ({ ...prev, [busStop.id]: null }));
-      setFailed(prev => ({ ...prev, [busStop.id]: true }));
+      console.error(`Error fetching schedule for stop ${stopId} route ${route}:`, error);
+      setSchedules(prev => ({ ...prev, [scheduleKey]: null }));
+      setFailed(prev => ({ ...prev, [scheduleKey]: true }));
     } finally {
-      setLoading(prev => ({ ...prev, [busStop.id]: false }));
+      setLoading(prev => ({ ...prev, [scheduleKey]: false }));
     }
   };
 
   const fetchAllSchedules = async () => {
     setRefreshing(true);
     try {
-      await Promise.allSettled(pinnedStops.map((busStop) => fetchSchedule(busStop)));
+      const fetchPromises: Promise<void>[] = [];
+      pinnedStops.forEach(busStop => {
+        busStop.stops.forEach(stopRoute => {
+          fetchPromises.push(fetchSchedule(busStop.id, stopRoute.stopId, stopRoute.route));
+        });
+      });
+      await Promise.allSettled(fetchPromises);
     } finally {
       setLastUpdated(new Date());
       setRefreshing(false);
@@ -107,11 +122,16 @@ export default function Home() {
     setPinnedStops(stops);
     // Clear schedules for removed stops
     setSchedules(prev => {
-      const stopIds = new Set(stops.map(s => s.id));
+      const validKeys = new Set<string>();
+      stops.forEach(busStop => {
+        busStop.stops.forEach(stopRoute => {
+          validKeys.add(`${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`);
+        });
+      });
       const filtered: Record<string, ScheduleResponse | null> = {};
-      Object.keys(prev).forEach(id => {
-        if (stopIds.has(id)) {
-          filtered[id] = prev[id];
+      Object.keys(prev).forEach(key => {
+        if (validKeys.has(key)) {
+          filtered[key] = prev[key];
         }
       });
       return filtered;
@@ -120,6 +140,56 @@ export default function Home() {
     setTimeout(() => {
       fetchAllSchedules();
     }, 100);
+  };
+
+  // Helper function to merge and sort schedules from all stop/route combinations for a bus stop
+  const getMergedSchedules = (busStop: BusStop) => {
+    const allSchedules: Array<{ schedule: ScheduleResponse['schedules'][0]; route: string; stopId: string }> = [];
+    
+    busStop.stops.forEach(stopRoute => {
+      const scheduleKey = `${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`;
+      const scheduleResponse = schedules[scheduleKey];
+      if (scheduleResponse?.schedules) {
+        scheduleResponse.schedules.forEach(schedule => {
+          allSchedules.push({
+            schedule,
+            route: stopRoute.route,
+            stopId: stopRoute.stopId
+          });
+        });
+      }
+    });
+
+    // Sort by time (convert HH:MM to minutes for comparison)
+    const timeToMinutes = (time: string): number => {
+      const [hours, minutes] = time.split(':').map(Number);
+      return hours * 60 + minutes;
+    };
+
+    allSchedules.sort((a, b) => {
+      const timeA = timeToMinutes(a.schedule.time);
+      const timeB = timeToMinutes(b.schedule.time);
+      return timeA - timeB;
+    });
+
+    // Take top 3 schedules
+    return allSchedules.slice(0, 3);
+  };
+
+  // Helper to check if any schedule is loading for a bus stop
+  const isBusStopLoading = (busStop: BusStop): boolean => {
+    return busStop.stops.some(stopRoute => {
+      const scheduleKey = `${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`;
+      return loading[scheduleKey] === true;
+    });
+  };
+
+  // Helper to check if any schedule failed for a bus stop
+  const hasBusStopFailed = (busStop: BusStop): boolean => {
+    return busStop.stops.some(stopRoute => {
+      const scheduleKey = `${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`;
+      return failed[scheduleKey] === true;
+    });
   };
 
   useEffect(() => {
@@ -144,7 +214,7 @@ export default function Home() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     // Fetch schedules whenever pinned stops change (on initial load)
@@ -193,50 +263,47 @@ export default function Home() {
                 <h2 className="text-xl font-semibold text-gray-800">
                   {busStop.name}
                 </h2>
-                <span className="text-sm bg-purple-100 text-purple-800 px-2 py-1 rounded-full">
-                  Route {busStop.route}
-                </span>
+                <div className="flex flex-wrap gap-1">
+                  {busStop.stops.map((stopRoute, idx) => (
+                    <span key={idx} className="text-sm bg-purple-100 text-purple-800 px-2 py-1 rounded-full">
+                      Route {stopRoute.route}
+                    </span>
+                  ))}
+                </div>
               </div>
               
               <p className="text-gray-600 text-sm mb-4">
                 {busStop.description || ''}
               </p>
 
-              {loading[busStop.id] ? (
+              {isBusStopLoading(busStop) ? (
                 <div className="flex items-center justify-center py-8">
                   <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
                   <span className="ml-2 text-gray-600">Loading...</span>
                 </div>
-              ) : failed[busStop.id] ? (
+              ) : hasBusStopFailed(busStop) ? (
                 <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
                   <p className="text-red-800 text-sm">
-                    ❌ Failed to load schedule
+                    ❌ Failed to load some schedules
                   </p>
                   <button
-                    onClick={() => fetchSchedule(busStop)}
+                    onClick={() => fetchAllSchedules()}
                     className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
                   >
                     Try again
                   </button>
                 </div>
-              ) : schedules[busStop.id] ? (
-                <div className="space-y-3">
-                  <h3 className="font-medium text-gray-700 flex items-center gap-2">
-                    🕐 Next departures:
-                  </h3>
-                  
-                  {schedules[busStop.id]?.note && (
-                    <div className="mb-3 p-2 bg-purple-50 border border-purple-200 rounded-lg">
-                      <p className="text-purple-800 text-xs">
-                        ℹ️ {schedules[busStop.id]!.note}
-                      </p>
-                    </div>
-                  )}
-                  
-                  {schedules[busStop.id]?.schedules?.length ? (
-                    schedules[busStop.id]!.schedules.map((schedule, index) => (
+              ) : (() => {
+                const mergedSchedules = getMergedSchedules(busStop);
+                return mergedSchedules.length > 0 ? (
+                  <div className="space-y-3">
+                    <h3 className="font-medium text-gray-700 flex items-center gap-2">
+                      🕐 Next departures:
+                    </h3>
+                    
+                    {mergedSchedules.map((item, index) => (
                       <div
-                        key={index}
+                        key={`${item.route}-${item.stopId}-${index}`}
                         className={`p-3 rounded-lg ${
                           index === 0
                             ? 'bg-amber-100 border border-amber-200'
@@ -246,16 +313,21 @@ export default function Home() {
                         }`}
                       >
                         <div className="flex items-center justify-between">
-                          <span className={`text-2xl font-bold ${
-                            index === 0 ? 'text-amber-900' : 
-                            index === 1 ? 'text-purple-900' : 
-                            'text-slate-800'
-                          }`}>
-                            {schedule.time}
-                          </span>
                           <div className="flex items-center gap-2">
-                            {schedule.realtime && schedule.delay !== undefined && (() => {
-                              const delayInfo = formatDelay(schedule.delay);
+                            <span className={`text-2xl font-bold ${
+                              index === 0 ? 'text-amber-900' : 
+                              index === 1 ? 'text-purple-900' : 
+                              'text-slate-800'
+                            }`}>
+                              {item.schedule.time}
+                            </span>
+                            <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded-full">
+                              {item.route}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {item.schedule.realtime && item.schedule.delay !== undefined && (() => {
+                              const delayInfo = formatDelay(item.schedule.delay);
                               return delayInfo.text ? (
                                 <span className={`text-xs ${delayInfo.color} ${delayInfo.bgColor} px-2 py-1 rounded-full font-medium`}>
                                   {delayInfo.text}
@@ -274,41 +346,22 @@ export default function Home() {
                             )}
                           </div>
                         </div>
-                        {schedule.destination && (
+                        {item.schedule.destination && (
                           <p className="text-sm text-gray-600 mt-1">
-                            → {schedule.destination}
+                            → {item.schedule.destination}
                           </p>
                         )}
                       </div>
-                    ))
-                  ) : (
-                    <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                      <p className="text-yellow-800 text-sm">
-                        😴 No more buses today or couldn&apos;t fetch schedule
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
-                  <p className="text-gray-600 text-sm">
-                    ⏳ Waiting to load...
-                  </p>
-                </div>
-              )}
-
-              {schedules[busStop.id]?.url && (
-                <div className="mt-4 pt-3 border-t border-gray-200">
-                  <a
-                    href={schedules[busStop.id]!.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-purple-700 hover:text-purple-900 underline"
-                  >
-                    🔗 View original schedule
-                  </a>
-                </div>
-              )}
+                    ))}
+                  </div>
+                ) : (
+                  <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <p className="text-yellow-800 text-sm">
+                      😴 No more buses today or couldn&apos;t fetch schedule
+                    </p>
+                  </div>
+                );
+              })()}
             </div>
           ))}
           </div>

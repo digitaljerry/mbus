@@ -2,6 +2,41 @@ import { BusStop } from '../types';
 
 const STORAGE_KEY = 'mbus-pinned-stops';
 
+// Old format interface for migration
+interface OldBusStop {
+  id: string;
+  name: string;
+  stopId?: string;
+  route?: string;
+  stops?: Array<{ stopId: string; route: string }>;
+  description?: string;
+}
+
+// Migration: Convert old format (single stopId/route) to new format (array of stops)
+function migrateBusStop(stop: OldBusStop | BusStop): BusStop {
+  // If it already has the new format (stops array), return as-is
+  if ('stops' in stop && Array.isArray(stop.stops) && stop.stops.length > 0) {
+    return stop as BusStop;
+  }
+  
+  // Otherwise, migrate from old format
+  if ('stopId' in stop && 'route' in stop && stop.stopId && stop.route) {
+    return {
+      id: stop.id,
+      name: stop.name,
+      stops: [{ stopId: stop.stopId, route: stop.route }],
+      description: stop.description
+    };
+  }
+  
+  // Fallback for malformed data - return minimal valid BusStop
+  return {
+    id: stop.id || `stop-${Date.now()}`,
+    name: stop.name || 'Unknown',
+    stops: []
+  };
+}
+
 export function loadPinnedStops(): BusStop[] {
   if (typeof window === 'undefined') {
     return [];
@@ -12,7 +47,9 @@ export function loadPinnedStops(): BusStop[] {
     if (!stored) {
       return [];
     }
-    return JSON.parse(stored) as BusStop[];
+    const parsed = JSON.parse(stored) as (OldBusStop | BusStop)[];
+    // Migrate old format to new format
+    return parsed.map(migrateBusStop);
   } catch (error) {
     console.error('Error loading pinned stops from localStorage:', error);
     return [];
