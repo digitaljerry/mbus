@@ -360,7 +360,7 @@ export default function Home() {
                 <div className="flex flex-wrap gap-1">
                   {busStop.stops.map((stopRoute, idx) => (
                     <span key={idx} className="text-sm bg-purple-100 text-purple-800 px-2 py-1 rounded-full">
-                      Route {stopRoute.route}
+                      {stopRoute.route}
                     </span>
                   ))}
                 </div>
