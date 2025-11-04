@@ -80,6 +80,12 @@ export default function Home() {
   const [isClient, setIsClient] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
+  
+  // Pull-to-refresh state
+  const [pullDistance, setPullDistance] = useState<number>(0);
+  const [isPulling, setIsPulling] = useState<boolean>(false);
+  const [startY, setStartY] = useState<number>(0);
+  const [canPull, setCanPull] = useState<boolean>(true);
 
   const fetchSchedule = async (busStopId: string, stopId: string, route: string) => {
     const scheduleKey = `${busStopId}-${stopId}-${route}`;
@@ -224,10 +230,98 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pinnedStops.length]);
 
+  // Pull-to-refresh handlers
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (window.scrollY === 0 && canPull && !refreshing) {
+      setStartY(e.touches[0].clientY);
+      setIsPulling(true);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isPulling || refreshing) return;
+
+    const currentY = e.touches[0].clientY;
+    const deltaY = currentY - startY;
+
+    if (deltaY > 0 && window.scrollY === 0) {
+      // Limit pull distance and add resistance
+      const distance = Math.min(deltaY * 0.5, 100);
+      setPullDistance(distance);
+      
+      // Prevent default scrolling when pulling
+      if (distance > 10) {
+        e.preventDefault();
+      }
+    } else {
+      setPullDistance(0);
+      setIsPulling(false);
+    }
+  };
+
+  const handleTouchEnd = async () => {
+    if (pullDistance > 60 && !refreshing) {
+      // Trigger refresh if pulled far enough
+      setCanPull(false);
+      setRefreshing(true);
+      try {
+        await fetchAllSchedules();
+      } finally {
+        setPullDistance(0);
+        setIsPulling(false);
+        setCanPull(true);
+        setTimeout(() => setRefreshing(false), 300);
+      }
+    } else {
+      // Reset if not pulled far enough
+      setPullDistance(0);
+      setIsPulling(false);
+    }
+  };
+
 
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-amber-50 via-purple-50 to-purple-100">
+    <div 
+      className="min-h-screen bg-gradient-to-br from-amber-50 via-purple-50 to-purple-100"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      style={{
+        transform: `translateY(${pullDistance}px)`,
+        transition: isPulling ? 'none' : 'transform 0.3s ease-out'
+      }}
+    >
+      {/* Pull-to-refresh indicator */}
+      <div 
+        className="fixed top-0 left-0 right-0 flex items-center justify-center z-40 transition-opacity duration-200"
+        style={{
+          height: `${Math.min(pullDistance, 80)}px`,
+          opacity: pullDistance > 10 ? 1 : 0,
+          pointerEvents: 'none'
+        }}
+      >
+        <div className="flex flex-col items-center gap-2">
+          {pullDistance > 60 ? (
+            <>
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600"></div>
+              <span className="text-sm text-purple-600 font-medium">Release to refresh</span>
+            </>
+          ) : (
+            <>
+              <div 
+                className="rounded-full h-6 w-6 border-2 border-purple-600"
+                style={{
+                  transform: `rotate(${pullDistance * 3}deg)`,
+                  borderTopColor: 'transparent'
+                }}
+              ></div>
+              <span className="text-sm text-purple-600 font-medium">Pull to refresh</span>
+            </>
+          )}
+        </div>
+      </div>
+
       <div className="container mx-auto px-4 py-8">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">

@@ -94,3 +94,15 @@ export function removePinnedStop(id: string): void {
   savePinnedStops(filtered);
 }
 
+export function clearPinnedStops(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch (error) {
+    console.error('Error clearing pinned stops from localStorage:', error);
+  }
+}
+

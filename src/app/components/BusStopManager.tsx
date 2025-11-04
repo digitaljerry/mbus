@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { BusStop, StopRoute } from '../types';
-import { loadPinnedStops, addPinnedStop, updatePinnedStop, removePinnedStop } from '../utils/storage';
+import { loadPinnedStops, addPinnedStop, updatePinnedStop, removePinnedStop, clearPinnedStops } from '../utils/storage';
 
 interface BusStopManagerProps {
   isOpen: boolean;
@@ -130,6 +130,15 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
   const handleCancel = () => {
     setEditingId(null);
     setFormData({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
+  };
+
+  const handleClearAll = () => {
+    if (confirm('Are you sure you want to clear all pinned stops? This will reset to default stops.')) {
+      clearPinnedStops();
+      const updated = loadPinnedStops();
+      setPinnedStops(updated);
+      onStopsChange(updated);
+    }
   };
 
   if (!isOpen) return null;
@@ -260,9 +269,20 @@ export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusSt
 
           {/* Pinned Stops List */}
           <div>
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              Pinned Stops ({pinnedStops.length})
-            </h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">
+                Pinned Stops ({pinnedStops.length})
+              </h3>
+              {pinnedStops.length > 0 && (
+                <button
+                  onClick={handleClearAll}
+                  className="text-sm text-red-600 hover:text-red-800 underline"
+                  title="Clear all pinned stops and reset to defaults"
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
 
             {pinnedStops.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
