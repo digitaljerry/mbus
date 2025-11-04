@@ -2,30 +2,12 @@
 
 import { useState, useEffect } from 'react';
 import { format } from 'date-fns';
+import { BusStop, ScheduleResponse } from './types';
+import { loadPinnedStops, savePinnedStops } from './utils/storage';
+import BusStopManager from './components/BusStopManager';
 
-interface Schedule {
-  time: string;
-  destination?: string;
-}
-
-interface BusStop {
-  id: string;
-  name: string;
-  stopId: string;
-  route: string;
-  description: string;
-}
-
-interface ScheduleResponse {
-  stop: string;
-  route: string;
-  date: string;
-  schedules: Schedule[];
-  url: string;
-  note?: string;
-}
-
-const BUS_STOPS: BusStop[] = [
+// Default stops to populate on first run
+const DEFAULT_STOPS: BusStop[] = [
   {
     id: 'home-to-city',
     name: '🏠 Home → 🏙️ City',
@@ -64,6 +46,7 @@ const BUS_STOPS: BusStop[] = [
 ];
 
 export default function Home() {
+  const [pinnedStops, setPinnedStops] = useState<BusStop[]>([]);
   const [schedules, setSchedules] = useState<Record<string, ScheduleResponse | null>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({});
   const [failed, setFailed] = useState<Record<string, boolean>>({});
@@ -71,6 +54,7 @@ export default function Home() {
   const [currentTime, setCurrentTime] = useState<string>('');
   const [isClient, setIsClient] = useState<boolean>(false);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
 
   const fetchSchedule = async (busStop: BusStop) => {
     setLoading(prev => ({ ...prev, [busStop.id]: true }));
@@ -95,11 +79,30 @@ export default function Home() {
   const fetchAllSchedules = async () => {
     setRefreshing(true);
     try {
-      await Promise.allSettled(BUS_STOPS.map((busStop) => fetchSchedule(busStop)));
+      await Promise.allSettled(pinnedStops.map((busStop) => fetchSchedule(busStop)));
     } finally {
       setLastUpdated(new Date());
       setRefreshing(false);
     }
+  };
+
+  const handleStopsChange = (stops: BusStop[]) => {
+    setPinnedStops(stops);
+    // Clear schedules for removed stops
+    setSchedules(prev => {
+      const stopIds = new Set(stops.map(s => s.id));
+      const filtered: Record<string, ScheduleResponse | null> = {};
+      Object.keys(prev).forEach(id => {
+        if (stopIds.has(id)) {
+          filtered[id] = prev[id];
+        }
+      });
+      return filtered;
+    });
+    // Fetch schedules for new stops
+    setTimeout(() => {
+      fetchAllSchedules();
+    }, 100);
   };
 
   useEffect(() => {
@@ -107,7 +110,16 @@ export default function Home() {
     setIsClient(true);
     setCurrentTime(format(new Date(), 'HH:mm:ss'));
     
-    fetchAllSchedules();
+    // Load pinned stops from localStorage
+    let stops = loadPinnedStops();
+    
+    // If no stops found, initialize with default stops
+    if (stops.length === 0) {
+      savePinnedStops(DEFAULT_STOPS);
+      stops = DEFAULT_STOPS;
+    }
+    
+    setPinnedStops(stops);
     
     // Update clock every second
     const timer = setInterval(() => {
@@ -116,6 +128,14 @@ export default function Home() {
 
     return () => clearInterval(timer);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    // Fetch schedules whenever pinned stops change (on initial load)
+    if (pinnedStops.length > 0 && Object.keys(schedules).length === 0) {
+      fetchAllSchedules();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedStops.length]);
 
 
 
@@ -134,8 +154,20 @@ export default function Home() {
           </p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 max-w-7xl mx-auto">
-          {BUS_STOPS.map((busStop) => (
+        {pinnedStops.length === 0 ? (
+          <div className="text-center py-16 bg-white rounded-xl shadow-lg max-w-2xl mx-auto">
+            <p className="text-xl text-gray-600 mb-4">No pinned stops yet!</p>
+            <p className="text-gray-500 mb-6">Add your favorite bus stops to get started.</p>
+            <button
+              onClick={() => setIsManagerOpen(true)}
+              className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200"
+            >
+              📌 Add Your First Stop
+            </button>
+          </div>
+        ) : (
+          <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 max-w-7xl mx-auto">
+            {pinnedStops.map((busStop) => (
             <div
               key={busStop.id}
               className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-purple-400"
@@ -150,7 +182,7 @@ export default function Home() {
               </div>
               
               <p className="text-gray-600 text-sm mb-4">
-                {busStop.description}
+                {busStop.description || ''}
               </p>
 
               {loading[busStop.id] ? (
@@ -252,17 +284,36 @@ export default function Home() {
               )}
             </div>
           ))}
-        </div>
+          </div>
+        )}
 
-        <div className="flex justify-center mt-8 mb-8">
+        {pinnedStops.length > 0 && (
+          <div className="flex justify-center mt-8 mb-8">
+            <button
+              onClick={fetchAllSchedules}
+              disabled={refreshing}
+              className="bg-purple-600 hover:bg-purple-700 disabled:hover:bg-purple-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
+            >
+              {refreshing ? '⏳ Refreshing…' : '🔄 Refresh Schedules'}
+            </button>
+          </div>
+        )}
+
+        {/* Manage Pinned Stops */}
+        <div className="flex justify-center mt-4 mb-8">
           <button
-            onClick={fetchAllSchedules}
-            disabled={refreshing}
+            onClick={() => setIsManagerOpen(true)}
             className="bg-purple-600 hover:bg-purple-700 disabled:hover:bg-purple-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
           >
-            {refreshing ? '⏳ Refreshing…' : '🔄 Refresh Schedules'}
+            📌 Manage Pinned Stops
           </button>
         </div>
+
+        <BusStopManager
+          isOpen={isManagerOpen}
+          onClose={() => setIsManagerOpen(false)}
+          onStopsChange={handleStopsChange}
+        />
 
         <div className="text-center mt-12 text-gray-500 text-sm">
           <p>
