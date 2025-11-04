@@ -271,12 +271,12 @@ export default function Home() {
           <p className="mt-1">
             Data from{' '}
             <a
-              href="https://vozniredi.marprom.si/"
+              href="https://api.beta.brezavta.si/docs"
               target="_blank"
               rel="noopener noreferrer"
               className="text-purple-700 hover:text-purple-900 underline"
             >
-              Marprom
+              Brezavta API
             </a>
           </p>
         </div>

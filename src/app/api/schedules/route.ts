@@ -1,16 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import axios from 'axios';
-import * as cheerio from 'cheerio';
 
 // Debug flag - derived from environment so production logs stay quiet
 const DEBUG = process.env.NODE_ENV !== 'production';
 
-const CACHE_TTL_MS = 60 * 1000; // cache schedules for one minute per stop/route/date
-const LOCAL_TIME_ZONE = 'Europe/Ljubljana';
+const CACHE_TTL_MS = 60 * 1000; // cache schedules for one minute per stop/route
+const API_BASE_URL = 'https://api.beta.brezavta.si';
+const WEBSITE_BASE_URL = 'https://brezavta.si';
+const USER_AGENT = 'MBus/1.0 (Next.js; https://github.com/digitaljerry/mbus)';
 const DEBUG_TARGET = {
   stop: '359',
-  route: 'G6',
-  date: '2025-09-22'
+  route: 'G6'
 };
 
 let debugActiveForRequest = false;
@@ -26,18 +26,30 @@ interface ScheduleResponsePayload {
 
 const scheduleCache = new Map<string, { timestamp: number; payload: ScheduleResponsePayload }>();
 
-interface ScrapedSchedule {
-  time: string;
-  destination?: string;
-  routeInfo?: string;
-  isG6Route?: boolean;
-  fullText?: string;
-  rowText?: string;
-}
-
 interface Schedule {
   time: string;
   destination?: string;
+}
+
+interface BrezavtaArrival {
+  agency_id: string;
+  agency_name: string;
+  route_id: string;
+  route_short_name: string;
+  route_color_background: string;
+  route_color_text: string;
+  trip_id: string;
+  trip_headsign: string;
+  realtime: boolean;
+  realtime_status: string;
+  passed: boolean;
+  arrival_scheduled: number;
+  arrival_realtime: number;
+  arrival_delay: number;
+  departure_scheduled: number;
+  departure_realtime: number;
+  departure_delay: number;
+  alerts: unknown[];
 }
 
 const log = (...args: unknown[]) => {
@@ -52,110 +64,42 @@ const logError = (...args: unknown[]) => {
   }
 };
 
-const extractHourMinute = (time: string) => {
-  const trimmed = time.trim();
-  const match = trimmed.match(/(\d{1,2})\D+(\d{2})/);
-  if (!match) {
-    return null;
-  }
-
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-
-  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-    return null;
-  }
-
-  return { hours, minutes };
-};
-
-const extractTimesFromText = (text: string): string[] => {
-  const normalized = text.replace(/\s+/g, ' ');
-  const times: string[] = [];
-  const pattern = /(?<!\d)(\d{1,2})([:.,h]?)(\d{2})(?!\d)/g;
-  let match: RegExpExecArray | null;
-
-  while ((match = pattern.exec(normalized)) !== null) {
-    const hours = Number(match[1]);
-    const minutes = Number(match[3]);
-
-    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-      continue;
-    }
-
-    if (hours >= 24 || minutes >= 60) {
-      continue;
-    }
-
-    times.push(`${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`);
-  }
-
-  return times;
-};
-
-const normalizeTime = (time: string): string => {
-  const extracted = extractHourMinute(time);
-  if (!extracted) {
-    return time;
-  }
-
-  const { hours, minutes } = extracted;
+/**
+ * Convert seconds since midnight to HH:MM format
+ */
+const secondsToTime = (seconds: number): string => {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
 };
 
+/**
+ * Convert HH:MM format to minutes since midnight
+ */
 const timeToMinutes = (time: string): number => {
-  const extracted = extractHourMinute(time);
-  if (!extracted) {
+  const [hours, minutes] = time.split(':').map(Number);
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) {
     return Number.POSITIVE_INFINITY;
   }
-
-  const { hours, minutes } = extracted;
   return hours * 60 + minutes;
 };
 
-const getCurrentTimeInfo = (timeZone: string) => {
-  try {
-    const formatter = new Intl.DateTimeFormat('en-GB', {
-      timeZone,
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-
-    const formatted = formatter.format(new Date());
-    const [hourStr, minuteStr] = formatted.split(':');
-    const hours = Number(hourStr);
-    const minutes = Number(minuteStr);
-
-    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
-      throw new Error('Invalid time components');
-    }
-
-    return {
-      formatted,
-      minutes: hours * 60 + minutes
-    };
-  } catch (error) {
-    logError('❌ Failed to format current time with timezone, falling back to server time:', error);
-    const now = new Date();
-    const formatted = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-    return {
-      formatted,
-      minutes: now.getHours() * 60 + now.getMinutes()
-    };
-  }
+/**
+ * Get current time in minutes since midnight
+ */
+const getCurrentTimeMinutes = (): number => {
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes();
 };
 
-// Mock data for demonstration - in a real app, you'd want to scrape or use an API
-const MOCK_SCHEDULES: Record<string, string[]> = {
-  '255': ['07:15', '07:45', '08:15', '08:45', '09:15', '09:45', '10:15', '10:45', '11:15', '11:45', '12:15', '12:45', '13:15', '13:45', '14:15', '14:45', '15:15', '15:45', '16:15', '16:45', '17:15', '17:45', '18:15', '18:45', '19:15', '19:45', '20:15', '20:45'],
-  '359': ['07:30', '08:00', '08:30', '09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '13:30', '14:00', '14:30', '15:00', '15:30', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '19:30', '20:00', '20:30', '21:00'],
-  '347': ['07:20', '07:50', '08:20', '08:50', '09:20', '09:50', '10:20', '10:50', '11:20', '11:50', '12:20', '12:50', '13:20', '13:50', '14:20', '14:50', '15:20', '15:50', '16:20', '16:50', '17:20', '17:50', '18:20', '18:50', '19:20', '19:50', '20:20'],
-  '326': ['07:10', '07:40', '08:10', '08:40', '09:10', '09:40', '10:10', '10:40', '11:10', '11:40', '12:10', '12:40', '13:10', '13:40', '14:10', '14:40', '15:10', '15:40', '16:10', '16:40', '17:10', '17:40', '18:10', '18:40', '19:10', '19:40', '20:10'],
-  '327': ['07:25', '07:55', '08:25', '08:55', '09:25', '09:55', '10:25', '10:55', '11:25', '11:55', '12:25', '12:55', '13:25', '13:55', '14:25', '14:55', '15:25', '15:55', '16:25', '16:55', '17:25', '17:55', '18:25', '18:55', '19:25', '19:55', '20:25'],
-  '157': ['07:10', '07:40', '08:10', '08:40', '09:10', '09:40', '10:10', '10:40', '11:10', '11:40', '12:10', '12:40', '13:10', '13:40', '14:10', '14:40', '15:10', '15:40', '16:10', '16:40', '17:10', '17:40', '18:10', '18:40', '19:10', '19:40', '20:10'],
-  '158': ['07:25', '07:55', '08:25', '08:55', '09:25', '09:55', '10:25', '10:55', '11:25', '11:55', '12:25', '12:55', '13:25', '13:55', '14:25', '14:55', '15:25', '15:55', '16:25', '16:55', '17:25', '17:55', '18:25', '18:55', '19:25', '19:55', '20:25']
+/**
+ * Format current time as HH:MM
+ */
+const getCurrentTimeFormatted = (): string => {
+  const now = new Date();
+  return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 };
+
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -167,8 +111,7 @@ export async function GET(request: NextRequest) {
   debugActiveForRequest = Boolean(
     DEBUG &&
     stop === DEBUG_TARGET.stop &&
-    route === DEBUG_TARGET.route &&
-    datum === DEBUG_TARGET.date
+    route === DEBUG_TARGET.route
   );
 
   let cacheKey = '';
@@ -186,256 +129,138 @@ export async function GET(request: NextRequest) {
     stopId = stop as string;
     routeId = route as string;
 
-    cacheKey = `${stopId}-${routeId}-${datum}`;
+    cacheKey = `${stopId}-${routeId}`;
     const cached = scheduleCache.get(cacheKey);
+    // Check if cached entry exists and is valid (has correct URL format)
     if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
-      log('🗃️ Serving schedules from cache');
-      return NextResponse.json(cached.payload);
+      // Validate cached URL format - if it's the old API URL, invalidate cache
+      if (cached.payload.url && cached.payload.url.includes('/stops/') && cached.payload.url.includes('/arrivals')) {
+        log('🗃️ Invalidating cache - old URL format detected');
+        scheduleCache.delete(cacheKey);
+      } else {
+        log('🗃️ Serving schedules from cache');
+        return NextResponse.json(cached.payload);
+      }
     }
 
     if (cached) {
       scheduleCache.delete(cacheKey);
     }
 
-    const url = `https://vozniredi.marprom.si/?stop=${stopId}&datum=${datum}&route=${routeId}`;
-    log('🌐 Fetching URL:', url);
-    let schedules: ScrapedSchedule[] = [];
+    // Format stop ID for Brezavta API: MARPROM:255
+    const apiStopId = `MARPROM:${stopId}`;
+    const encodedStopId = encodeURIComponent(apiStopId);
+    const apiUrl = `${API_BASE_URL}/stops/${encodedStopId}/arrivals`;
+    const websiteUrl = `${WEBSITE_BASE_URL}/stop/${apiStopId}`;
+    
+    log('🌐 Fetching from Brezavta API:', apiUrl);
+
+    let arrivals: BrezavtaArrival[] = [];
 
     try {
-      // Try to fetch real data first
-      log('📡 Starting real data fetch...');
-      const response = await axios.get(url, {
+      const response = await axios.get<BrezavtaArrival[]>(apiUrl, {
+        timeout: 10000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        },
-        timeout: 5000
+          'Accept': 'application/json',
+          'User-Agent': USER_AGENT
+        }
       });
 
-      log('✅ Response received, status:', response.status);
-      log('📄 Response length:', response.data.length);
-      
-      const $ = cheerio.load(response.data);
-      
-      // Try multiple selectors to find schedule data
-      const selectors = [
-        'table td:contains(":")',
-        '.time',
-        '.schedule-time',
-        'td',
-        'span:contains(":")',
-        'div:contains(":")'
-      ];
+      log('✅ API Response received, status:', response.status);
+      log('📊 Total arrivals received:', response.data.length);
 
-      const processedRows = new WeakSet<object>();
+      arrivals = response.data;
 
-      log('🔍 Trying selectors to find schedule data...');
-      
-      for (const selector of selectors) {
-        log(`🎯 Trying selector: ${selector}`);
-        const elements = $(selector);
-        log(`📊 Found ${elements.length} elements for selector: ${selector}`);
-
-        let foundForSelector = false;
-
-        $(selector).each((index, element) => {
-            const $element = $(element);
-            const rowElement = $element.closest('tr').get(0);
-            if (!rowElement) {
-              return;
-            }
-            if (processedRows.has(rowElement as object)) {
-              return;
-            }
-
-            processedRows.add(rowElement as object);
-
-            const rowText = $(rowElement).text().trim();
-            const allTimeMatches = extractTimesFromText(rowText);
-
-            log('🧾 Row match count:', allTimeMatches.length, 'Row sample:', rowText.slice(0, 120));
-
-            if (allTimeMatches.length > 0) {
-              // Try to find route information in the surrounding context
-              const parentText = $element.parent().text().trim();
-              
-              // Look for G6 route indicators - only full route descriptions
-              const g6RouteIndicators = [
-                'G6',
-                'Avtobusna postaja - Vzpenjača',
-                'Vzpenjača - Avtobusna postaja'
-              ];
-              
-              // Also check for other route indicators for debugging
-              const allRouteIndicators = [
-                'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8', 'G9',
-                'P7', 'P8', 'P9', 'P10', 'P11', 'P12',
-                'Avtobusna postaja - Vzpenjača',
-                'Vzpenjača - Avtobusna postaja'
-              ];
-              
-              let routeInfo = 'Unknown';
-              let isG6Route = false;
-              
-              // Check for G6 specific routes
-              for (const indicator of g6RouteIndicators) {
-                if (rowText.includes(indicator) || parentText.includes(indicator)) {
-                  routeInfo = indicator;
-                  isG6Route = true;
-                  break;
-                }
-              }
-              
-              // If not G6, check what other route it might be (for debugging)
-              if (!isG6Route) {
-                for (const indicator of allRouteIndicators) {
-                  if (rowText.includes(indicator) || parentText.includes(indicator)) {
-                    routeInfo = indicator;
-                    break;
-                  }
-                }
-              }
-              
-              // Create separate schedule entries for each time found
-              allTimeMatches.forEach(timeStr => {
-                if (timeStr !== '00:00') {
-                  log(`⏰ Found time: ${timeStr} | Route: ${routeInfo} | Is G6: ${isG6Route}`);
-                  
-                  schedules.push({
-                    time: timeStr,
-                    destination: undefined, // Don't include other times as destination
-                  routeInfo: routeInfo,
-                  isG6Route: isG6Route,
-                  fullText: rowText,
-                  rowText: rowText
-                });
-                  foundForSelector = true;
-                }
-              });
-            }
-          });
-
-        if (foundForSelector && schedules.length > 0) {
-          log(`✅ Found ${schedules.length} schedules with selector: ${selector}`);
-          break;
-        }
+      // Filter by route if specified
+      if (routeId) {
+        const beforeFilter = arrivals.length;
+        arrivals = arrivals.filter(arrival => arrival.route_short_name === routeId);
+        log(`🚌 Filtered by route ${routeId}: ${arrivals.length}/${beforeFilter} arrivals`);
       }
 
-      // Remove duplicates
-      const originalLength = schedules.length;
-      schedules = schedules.filter((schedule, index, self) => 
-        index === self.findIndex(s => s.time === schedule.time)
-      );
-      log(`🔄 Removed ${originalLength - schedules.length} duplicates`);
-      log('📋 All scraped schedules:', schedules);
-      
-      // Filter for G6 routes only
-      const g6Schedules = schedules.filter(schedule => schedule.isG6Route);
-      log(`🚌 G6 schedules found: ${g6Schedules.length}/${schedules.length}`);
-      log('📋 G6 schedules:', g6Schedules);
-      
-      // Use G6 schedules if found, otherwise keep all (fallback)
-      if (g6Schedules.length > 0) {
-        schedules = g6Schedules;
-        log('✅ Using filtered G6 schedules');
-      } else {
-        log('⚠️ No G6 schedules found, keeping all schedules as fallback');
+      // Filter out passed arrivals
+      const beforePassedFilter = arrivals.length;
+      arrivals = arrivals.filter(arrival => !arrival.passed);
+      log(`⏭️ Future arrivals (not passed): ${arrivals.length}/${beforePassedFilter}`);
+
+      // Sort by arrival time and take next 3
+      arrivals.sort((a, b) => {
+        const timeA = a.realtime ? a.arrival_realtime : a.arrival_scheduled;
+        const timeB = b.realtime ? b.arrival_realtime : b.arrival_scheduled;
+        return timeA - timeB;
+      });
+
+      arrivals = arrivals.slice(0, 3);
+      log(`📋 Next 3 arrivals: ${arrivals.map(a => secondsToTime(a.realtime ? a.arrival_realtime : a.arrival_scheduled)).join(', ')}`);
+
+    } catch (apiError) {
+      logError('❌ API request failed:', apiError);
+      if (axios.isAxiosError(apiError)) {
+        logError('❌ Response status:', apiError.response?.status);
+        logError('❌ Response data:', apiError.response?.data);
       }
-
-    } catch (scrapeError) {
-      log('❌ Scraping failed:', scrapeError);
-      log('🔄 Will fall back to mock data');
+      throw apiError;
     }
 
-    // If scraping failed or returned no results, use mock data
-    if (schedules.length === 0 && MOCK_SCHEDULES[stop]) {
-      log(`📦 Using mock data for stop ${stop}`);
-      schedules = MOCK_SCHEDULES[stop].map(time => ({ time }));
-      log(`📋 Mock schedules loaded: ${schedules.length} times`);
-    } else if (schedules.length === 0) {
-      log(`❌ No mock data available for stop ${stop}`);
-    }
+    // Convert arrivals to Schedule format
+    const currentMinutes = getCurrentTimeMinutes();
+    const currentTime = getCurrentTimeFormatted();
+    log(`🕐 Current time: ${currentTime} (${currentMinutes} minutes)`);
 
-    // Convert to clean Schedule objects for filtering
-    const cleanSchedules: Schedule[] = schedules.map(s => ({
-      time: normalizeTime(s.time),
-      destination: s.destination
-    }));
-
-    // Filter and sort schedules to get next departures
-    const { formatted: currentTime, minutes: currentMinutes } = getCurrentTimeInfo(LOCAL_TIME_ZONE);
-    log(`🕐 Current time: ${currentTime}`);
-    log(`📋 All schedules before filtering: ${cleanSchedules.map(s => s.time).join(', ')}`);
-    
-    const futureSchedules = cleanSchedules
-      .filter(schedule => timeToMinutes(schedule.time) > currentMinutes)
-      .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time))
-      .slice(0, 3);
-    
-    log(`⏭️ Future schedules (next 3): ${futureSchedules.map(s => s.time).join(', ')}`);
-
-    // If no future schedules for today, get first three of tomorrow
-    if (futureSchedules.length === 0) {
-      log('🌙 No future schedules for today, showing tomorrow\'s first departures');
-      const allSchedules = [...cleanSchedules]
-        .sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time))
-        .slice(0, 3);
-      log(`🌅 Tomorrow's first departures: ${allSchedules.map(s => s.time).join(', ')}`);
+    const schedules: Schedule[] = arrivals.map(arrival => {
+      const arrivalTime = arrival.realtime ? arrival.arrival_realtime : arrival.arrival_scheduled;
+      const timeStr = secondsToTime(arrivalTime);
       
-      const result: ScheduleResponsePayload = {
-        stop,
-        route,
-        date: datum,
-        schedules: allSchedules.map(s => ({ ...s, time: `${s.time} (+1 day)` })),
-        url,
-        note: 'No more buses today - showing tomorrow\'s first departures'
+      return {
+        time: timeStr,
+        destination: arrival.trip_headsign || undefined
       };
-      scheduleCache.set(cacheKey, { timestamp: Date.now(), payload: result });
-      log('📤 Returning result (tomorrow):', result);
-      return NextResponse.json(result);
-    }
+    });
+
+    // Filter to only future schedules (in case API returned some that are very close to current time)
+    const futureSchedules = schedules.filter(schedule => {
+      const scheduleMinutes = timeToMinutes(schedule.time);
+      return scheduleMinutes > currentMinutes;
+    });
+
+    log(`⏭️ Future schedules after time filter: ${futureSchedules.length}`);
+
+    // If no future schedules, show next available (might be tomorrow)
+    const displaySchedules = futureSchedules.length > 0 ? futureSchedules : schedules.slice(0, 3);
 
     const result: ScheduleResponsePayload = {
       stop: stopId,
       route: routeId,
       date: datum,
-      schedules: futureSchedules,
-      url
+      schedules: displaySchedules,
+      url: websiteUrl,
+      note: futureSchedules.length === 0 && schedules.length > 0 
+        ? 'No more buses today - showing next available departures'
+        : undefined
     };
+
     scheduleCache.set(cacheKey, { timestamp: Date.now(), payload: result });
-    log('📤 Returning result (today):', result);
+    log('📤 Returning result:', result);
     return NextResponse.json(result);
 
   } catch (error) {
     logError('❌ Major error in API:', error);
 
-    // Fallback to mock data
-    log('🔄 Using fallback mock data due to major error');
-    const mockTimes = MOCK_SCHEDULES[stopId] || ['08:00', '08:30'];
-    const { formatted: currentTime, minutes: currentMinutes } = getCurrentTimeInfo(LOCAL_TIME_ZONE);
-      log(`🕐 Fallback current time: ${currentTime}`);
-    log(`📦 Fallback mock times: ${mockTimes.join(', ')}`);
-    
-    const futureSchedules = mockTimes
-      .map(normalizeTime)
-      .filter(time => timeToMinutes(time) > currentMinutes)
-      .slice(0, 3)
-      .map(time => ({ time }));
-
-    log(`⏭️ Fallback future schedules: ${futureSchedules.map(s => s.time).join(', ')}`);
-
     const fallbackResult: ScheduleResponsePayload = { 
       stop: stopId,
       route: routeId,
       date: datum,
-      schedules: futureSchedules,
-      url: `https://vozniredi.marprom.si/?stop=${stopId}&datum=${datum}&route=${routeId}`,
-      note: 'Using sample data - real-time data unavailable'
+      schedules: [],
+      url: `${WEBSITE_BASE_URL}/stop/MARPROM:${stopId}`,
+      note: 'Unable to fetch schedule data from API'
     };
+    
     if (cacheKey) {
       scheduleCache.delete(cacheKey);
     }
-    log('📤 Returning fallback result:', fallbackResult);
-    return NextResponse.json(fallbackResult);
+    
+    log('📤 Returning error result:', fallbackResult);
+    return NextResponse.json(fallbackResult, { status: 500 });
   } finally {
     debugActiveForRequest = previousDebugState;
   }
