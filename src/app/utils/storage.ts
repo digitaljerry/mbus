@@ -1,4 +1,6 @@
-import { BusStop } from '../types';
+import { BusStop, StopRoute } from '../types';
+import { DEFAULT_STOPS } from '../lib/defaults';
+import { cleanUsualBus, type UsualBus } from '../lib/usual';
 
 const STORAGE_KEY = 'mbus-pinned-stops';
 
@@ -37,17 +39,25 @@ function migrateBusStop(stop: OldBusStop | BusStop): BusStop {
   };
 }
 
-// Stop 327 (Streliška, towards Pohorje) is not served by P18; the P18 stop
-// for the same direction is 243 (OŠ Ludvika Pliberška). Earlier defaults
-// shipped 327/P18, which never returned departures.
+// Fixes for stops the original default journeys got wrong:
+// - 327 (Streliška, towards Pohorje) isn't served by P18 at all.
+// - At OŠ Ludvika Pliberška, P18 leaves 242 towards Pekre (home) and 243
+//   towards the city; the defaults had them the other way round.
 function fixKnownBadStops(stop: BusStop): BusStop {
-  if (!stop.stops.some(s => s.stopId === '327' && s.route.toUpperCase() === 'P18')) return stop;
-  return {
-    ...stop,
-    stops: stop.stops.map(s =>
-      s.stopId === '327' && s.route.toUpperCase() === 'P18' ? { ...s, stopId: '243' } : s
-    ),
-  };
+  const isP18 = (s: StopRoute) => s.route.toUpperCase() === 'P18';
+  let stops = stop.stops.map(s => (s.stopId === '327' && isP18(s) ? { ...s, stopId: '242' } : s));
+  if (stop.id === 'school-to-home') stops = stops.map(s => (s.stopId === '243' && isP18(s) ? { ...s, stopId: '242' } : s));
+  if (stop.id === 'school-to-city') stops = stops.map(s => (s.stopId === '242' && isP18(s) ? { ...s, stopId: '243' } : s));
+  // Give default journeys their destination stop (for arrival times) unless set.
+  const preset = DEFAULT_STOPS.find(d => d.id === stop.id);
+  if (preset) {
+    stops = stops.map(s => {
+      if (s.toStopId) return s;
+      const match = preset.stops.find(p => p.stopId === s.stopId && p.route === s.route.toUpperCase());
+      return match?.toStopId ? { ...s, toStopId: match.toStopId } : s;
+    });
+  }
+  return { ...stop, stops };
 }
 
 export function loadPinnedStops(): BusStop[] {
@@ -119,3 +129,27 @@ export function clearPinnedStops(): void {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Usual buses
+
+const USUAL_KEY = 'mbus-usual-buses';
+
+export function loadUsualBuses(): UsualBus[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(USUAL_KEY) ?? '[]');
+    return Array.isArray(parsed) ? parsed.map(cleanUsualBus).filter((u): u is UsualBus => u !== null) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveUsualBuses(list: UsualBus[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(USUAL_KEY, JSON.stringify(list));
+  } catch (error) {
+    console.error('Error saving usual buses:', error);
+  }
+}

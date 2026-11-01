@@ -1,20 +1,28 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bus, LayoutList, Map as MapIcon, RefreshCw, Settings2, Sun, WifiOff } from 'lucide-react';
+import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Settings2, Sun, WifiOff } from 'lucide-react';
 import type { BusStop, Vehicle } from './types';
-import { loadPinnedStops, savePinnedStops } from './utils/storage';
+import { loadPinnedStops, loadUsualBuses, savePinnedStops, saveUsualBuses } from './utils/storage';
 import { DEFAULT_STOPS, splitJourneyName } from './lib/defaults';
 import { ago, SECONDS_THRESHOLD_MS } from './lib/format';
 import { routeColor } from './lib/routeColors';
+import { isoWeekday, sameUsual, WEEKDAYS, type UsualBus } from './lib/usual';
+import { zonedDateString } from './lib/time';
 import { useNow } from './hooks/useNow';
 import { legKey, useSchedules } from './hooks/useSchedules';
 import { useVehicles } from './hooks/useVehicles';
 import { useWakeLock } from './hooks/useWakeLock';
+import { useGeolocation } from './hooks/useGeolocation';
+import { usePush } from './hooks/usePush';
 import BusStopManager from './components/BusStopManager';
 import JourneyCard, { mergeDepartures, type Departure } from './components/JourneyCard';
 import DepartureSheet, { departureKey } from './components/DepartureSheet';
+import UsualSection, { usualDeparture, usualJourneyId } from './components/UsualSection';
+import UsualBusEditor from './components/UsualBusEditor';
+import NearbyView, { type NearbyStop } from './components/NearbyView';
 import type { MapFocus, MapStop } from './components/LiveMap';
 
 const LiveMap = dynamic(() => import('./components/LiveMap'), {
@@ -25,6 +33,8 @@ const LiveMap = dynamic(() => import('./components/LiveMap'), {
 const SELECTED_KEY = 'mbus-selected-journey';
 const MIGRATION_KEY = 'mbus-journeys-v2';
 const KEEP_AWAKE_KEY = 'mbus-keep-awake';
+const ALL = 'all';
+const NEARBY = 'nearby';
 
 // One-time: give existing users the Home → School / Home → Office shortcuts.
 function addNewDefaultJourneysOnce(stops: BusStop[]): BusStop[] {
@@ -42,17 +52,28 @@ function addNewDefaultJourneysOnce(stops: BusStop[]): BusStop[] {
   savePinnedStops(next);
   return next;
 }
-const ALL = 'all';
+
+interface Tracked {
+  key: string;
+  /** Journey (or usual-bus pseudo journey) the departure came from, if any. */
+  journeyId?: string;
+  title?: string;
+  last: Departure;
+}
 
 export default function Home() {
   const [journeys, setJourneys] = useState<BusStop[]>([]);
+  const [usual, setUsual] = useState<UsualBus[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState<string>(ALL);
   const [managerOpen, setManagerOpen] = useState(false);
   const [mobileView, setMobileView] = useState<'board' | 'map'>('board');
   const [focus, setFocus] = useState<MapFocus>();
   const [online, setOnline] = useState(true);
-  const [tracked, setTracked] = useState<{ key: string; journeyId: string; last: Departure } | null>(null);
+  const [tracked, setTracked] = useState<Tracked | null>(null);
+  const [editingUsual, setEditingUsual] = useState<{ bus: UsualBus; isNew: boolean } | null>(null);
+  const [pendingUsualId, setPendingUsualId] = useState<string | null>(null);
+  const [nearbyStops, setNearbyStops] = useState<NearbyStop[]>([]);
   const [keepAwake, setKeepAwake] = useState(true);
   const now = useNow(1000);
 
@@ -66,13 +87,20 @@ export default function Home() {
       stops = addNewDefaultJourneysOnce(stops);
     }
     setJourneys(stops);
-    const fromUrl = new URLSearchParams(window.location.search).get('j');
+    setUsual(loadUsualBuses());
+    const params = new URLSearchParams(window.location.search);
     let stored: string | null = null;
     try {
       stored = localStorage.getItem(SELECTED_KEY);
     } catch {}
-    const want = fromUrl ?? stored ?? ALL;
-    setSelected(want === ALL || stops.some(s => s.id === want) ? want : ALL);
+    const want = params.get('j') ?? stored ?? ALL;
+    setSelected(want === ALL || want === NEARBY || stops.some(s => s.id === want) ? want : ALL);
+    // Opened from a reminder notification: show that bus.
+    const usualId = params.get('usual');
+    if (usualId) {
+      setPendingUsualId(usualId);
+      setSelected(ALL);
+    }
     try {
       setKeepAwake(localStorage.getItem(KEEP_AWAKE_KEY) !== 'off');
     } catch {}
@@ -94,6 +122,7 @@ export default function Home() {
       localStorage.setItem(SELECTED_KEY, id);
     } catch {}
     const url = new URL(window.location.href);
+    url.searchParams.delete('usual');
     if (id === ALL) url.searchParams.delete('j');
     else url.searchParams.set('j', id);
     window.history.replaceState(null, '', url);
@@ -103,19 +132,39 @@ export default function Home() {
     (next: BusStop[]) => {
       setJourneys(next);
       savePinnedStops(next);
-      if (selected !== ALL && !next.some(j => j.id === selected)) select(ALL);
+      if (selected !== ALL && selected !== NEARBY && !next.some(j => j.id === selected)) select(ALL);
     },
     [selected, select]
   );
 
+  const updateUsual = useCallback((next: UsualBus[]) => {
+    setUsual(next);
+    saveUsualBuses(next);
+  }, []);
+
+  const isNearby = selected === NEARBY;
   const visible = useMemo(
     () => (selected === ALL ? journeys : journeys.filter(j => j.id === selected)),
     [journeys, selected]
   );
 
-  const { data, errors, lastUpdated, refreshing, refresh } = useSchedules(journeys);
+  // Usual buses are fetched like one-leg journeys so they get live data too.
+  const usualJourneys = useMemo<BusStop[]>(
+    () => usual.map(u => ({ id: usualJourneyId(u), name: u.label ?? u.time, stops: [{ stopId: u.stopId, route: u.route, toStopId: u.toStopId }] })),
+    [usual]
+  );
+  const fetchJourneys = useMemo(() => [...journeys, ...usualJourneys], [journeys, usualJourneys]);
+  const { data, errors, lastUpdated, refreshing, refresh } = useSchedules(fetchJourneys);
 
-  const visibleRoutes = useMemo(() => [...new Set(visible.flatMap(j => j.stops.map(s => s.route.toUpperCase())))], [visible]);
+  const geo = useGeolocation(isNearby);
+  const push = usePush(usual, loaded);
+
+  const visibleRoutes = useMemo(() => {
+    if (isNearby) return [...new Set(nearbyStops.flatMap(s => s.departures.map(d => d.route)))];
+    const fromJourneys = visible.flatMap(j => j.stops.map(s => s.route.toUpperCase()));
+    const fromUsual = selected === ALL ? usual.map(u => u.route.toUpperCase()) : [];
+    return [...new Set([...fromJourneys, ...fromUsual])];
+  }, [visible, isNearby, nearbyStops, usual, selected]);
   const { vehicles } = useVehicles(visibleRoutes, loaded);
 
   const vehiclesByTrip = useMemo(() => {
@@ -125,17 +174,20 @@ export default function Home() {
   }, [vehicles]);
 
   const mapStops = useMemo<MapStop[]>(() => {
+    if (isNearby) {
+      return nearbyStops.map(s => ({ id: s.stop, name: s.stopName, lat: s.lat, lon: s.lon, color: s.departures[0]?.routeColor ?? '#475569' }));
+    }
     const m = new Map<string, MapStop>();
-    visible.forEach(j =>
-      j.stops.forEach(s => {
-        const resp = data[legKey(s.stopId, s.route)];
-        if (resp?.lat && resp.lon && !m.has(s.stopId)) {
-          m.set(s.stopId, { id: s.stopId, name: resp.stopName ?? `Stop ${s.stopId}`, lat: resp.lat, lon: resp.lon, color: resp.routeColor ?? routeColor(s.route) });
-        }
-      })
-    );
+    const add = (stopId: string, route: string, toStopId?: string) => {
+      const resp = data[legKey(stopId, route, toStopId)];
+      if (resp?.lat && resp.lon && !m.has(stopId)) {
+        m.set(stopId, { id: stopId, name: resp.stopName ?? `Stop ${stopId}`, lat: resp.lat, lon: resp.lon, color: resp.routeColor ?? routeColor(route) });
+      }
+    };
+    visible.forEach(j => j.stops.forEach(s => add(s.stopId, s.route, s.toStopId)));
+    if (selected === ALL) usual.forEach(u => add(u.stopId, u.route, u.toStopId));
     return [...m.values()];
-  }, [visible, data]);
+  }, [visible, data, isNearby, nearbyStops, usual, selected]);
 
   const showOnMap = useCallback((target: { vehicle?: Vehicle; stopId?: string }) => {
     setFocus({ vehicleId: target.vehicle?.id, stopId: target.stopId, nonce: Date.now() });
@@ -151,21 +203,90 @@ export default function Home() {
   // The tracked departure, refreshed from the latest data (delays move it).
   const trackedLive = useMemo(() => {
     if (!tracked) return null;
-    const j = journeys.find(x => x.id === tracked.journeyId);
+    const j = fetchJourneys.find(x => x.id === tracked.journeyId);
     const fresh = j ? mergeDepartures(j, data, 0).find(d => departureKey(d) === tracked.key) : undefined;
-    return { departure: fresh ?? tracked.last, current: Boolean(fresh), journeyName: j?.name };
-  }, [tracked, journeys, data]);
+    const title = tracked.title ?? j?.name;
+    if (fresh) return { departure: fresh, current: true, title };
+    return { departure: tracked.last, current: !j && tracked.last.schedule.epoch > now - 30_000, title };
+  }, [tracked, fetchJourneys, data, now]);
 
-  const openDeparture = useCallback(
-    (journeyId: string) => (d: Departure) => setTracked({ key: departureKey(d), journeyId, last: d }),
-    []
+  const openDeparture = useCallback((d: Departure, journeyId?: string, title?: string) => {
+    setTracked({ key: departureKey(d), journeyId, title, last: d });
+  }, []);
+
+  // Notification tap (?usual=id): open that bus once it's loaded.
+  useEffect(() => {
+    if (!pendingUsualId || !now) return;
+    const u = usual.find(x => x.id === pendingUsualId);
+    if (u) {
+      const d = usualDeparture(u, data, now);
+      if (d) openDeparture(d, usualJourneyId(u), u.label ?? undefined);
+    }
+    setPendingUsualId(null);
+  }, [pendingUsualId, usual, data, now, openDeparture]);
+
+  const usualFor = useCallback(
+    (d: Departure) => usual.find(u => sameUsual(u, d.stopId, d.route, d.schedule.scheduledTime ?? d.schedule.time)),
+    [usual]
+  );
+
+  const startUsual = useCallback(
+    (d: Departure) => {
+      const existing = usualFor(d);
+      if (existing) return setEditingUsual({ bus: existing, isNew: false });
+      const date = zonedDateString(new Date(d.schedule.epoch));
+      const weekday = isoWeekday(date);
+      // Walking time: from Nearby if we know it.
+      const walk = nearbyStops.find(s => s.stop === d.stopId)?.walkMinutes;
+      setEditingUsual({
+        isNew: true,
+        bus: {
+          id: `usual-${Date.now().toString(36)}`,
+          stopId: d.stopId,
+          stopName: d.stopName,
+          route: d.route,
+          routeColor: d.color,
+          destination: d.schedule.destination,
+          time: d.schedule.scheduledTime ?? d.schedule.time,
+          days: weekday <= 5 ? WEEKDAYS : [weekday],
+          walkMinutes: walk ?? 5,
+          toStopId: d.toStopId,
+          toStopName: d.toStopId ? d.toStopName : undefined,
+          remind: false,
+          remindBefore: 5,
+          createdAt: Date.now(),
+        },
+      });
+    },
+    [usualFor, nearbyStops]
+  );
+
+  const saveNearbyAsJourney = useCallback(
+    (s: NearbyStop) => {
+      const routes = [...new Set(s.departures.map(d => d.route))];
+      if (!routes.length) return;
+      const journey: BusStop = {
+        id: `journey-${Date.now()}`,
+        name: `📍 ${s.stopName}`,
+        description: s.departures[0]?.destination ? `Towards ${s.departures[0].destination}` : undefined,
+        stops: routes.map(route => ({ stopId: s.stop, route })),
+      };
+      updateJourneys([...journeys, journey]);
+      select(journey.id);
+    },
+    [journeys, updateJourneys, select]
   );
 
   // Keep the screen on while a bus you're looking at is about to leave.
   const soonest = useMemo(() => {
-    const list = trackedLive?.current ? [trackedLive.departure] : [...departuresByJourney.values()].map(l => l[0]).filter(Boolean);
+    if (trackedLive?.current) return trackedLive.departure.schedule.epoch;
+    const list = [...departuresByJourney.values()].map(l => l[0]).filter(Boolean);
+    if (selected === ALL) usual.forEach(u => {
+      const d = now ? usualDeparture(u, data, now) : null;
+      if (d) list.push(d);
+    });
     return Math.min(...list.map(d => d.schedule.epoch), Infinity);
-  }, [departuresByJourney, trackedLive]);
+  }, [departuresByJourney, trackedLive, usual, data, now, selected]);
   const departingSoon = now > 0 && soonest - now < SECONDS_THRESHOLD_MS && soonest - now > -30_000;
   const wake = useWakeLock(keepAwake && departingSoon);
 
@@ -179,6 +300,23 @@ export default function Home() {
   }, []);
 
   const hasErrors = Object.keys(errors).length > 0;
+  const chips = [
+    { id: ALL, label: <>All journeys</> },
+    { id: NEARBY, label: <><LocateFixed className="mr-1 inline size-4 -translate-y-px" aria-hidden />Nearby</> },
+    ...journeys.map(j => {
+      const { from, to } = splitJourneyName(j.name);
+      return {
+        id: j.id,
+        label: (
+          <>
+            {from}
+            {to && <span className="opacity-60"> → </span>}
+            {to}
+          </>
+        ),
+      };
+    }),
+  ];
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -195,7 +333,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex items-center gap-1">
             {wake.held && (
               <button
                 onClick={toggleKeepAwake}
@@ -220,6 +358,9 @@ export default function Home() {
               )}
               <span className="whitespace-nowrap tabular">{online ? (lastUpdated ? `Updated ${ago(lastUpdated, now)}` : 'Loading…') : 'Offline'}</span>
             </button>
+            <Link href="/about" className="rounded-full p-2.5 text-ink-2 hover:bg-surface-2 hover:text-ink" aria-label="About and roadmap">
+              <Info className="size-5" />
+            </Link>
             <button
               onClick={() => setManagerOpen(true)}
               className="rounded-full p-2.5 text-ink-2 hover:bg-surface-2 hover:text-ink"
@@ -234,21 +375,18 @@ export default function Home() {
         <nav aria-label="Journeys" className="mx-auto max-w-[90rem]">
           <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-3 sm:px-6">
             {loaded &&
-              [{ id: ALL, name: 'All journeys' }, ...journeys].map(j => {
-                const active = selected === j.id;
-                const { from, to } = splitJourneyName(j.name);
+              chips.map(c => {
+                const active = selected === c.id;
                 return (
                   <button
-                    key={j.id}
-                    onClick={() => select(j.id)}
+                    key={c.id}
+                    onClick={() => select(c.id)}
                     aria-pressed={active}
                     className={`shrink-0 rounded-full px-3.5 py-2 text-sm font-medium transition-colors ${
                       active ? 'bg-ink text-bg' : 'bg-surface text-ink-2 ring-1 ring-line hover:text-ink'
                     }`}
                   >
-                    {from}
-                    {to && <span className="opacity-60"> → </span>}
-                    {to}
+                    {c.label}
                   </button>
                 );
               })}
@@ -273,38 +411,67 @@ export default function Home() {
                 <div key={i} className="h-56 animate-pulse rounded-2xl bg-surface" />
               ))}
             </div>
-          ) : journeys.length === 0 ? (
-            <div className="rounded-2xl border border-line bg-surface p-10 text-center shadow-card">
-              <p className="text-lg font-semibold">No journeys yet</p>
-              <p className="mt-1 text-sm text-ink-3">Add the stops you use and MBus will count down to your next bus.</p>
-              <button onClick={() => setManagerOpen(true)} className="mt-5 rounded-xl bg-accent px-5 py-3 font-semibold text-accent-ink">
-                Add a journey
-              </button>
-            </div>
+          ) : isNearby ? (
+            <NearbyView
+              status={geo.status}
+              position={geo.position}
+              now={now}
+              onRetry={geo.retry}
+              onStops={setNearbyStops}
+              onOpen={(d, title) => openDeparture(d, undefined, title)}
+              onShowStop={stopId => showOnMap({ stopId })}
+              onSaveJourney={saveNearbyAsJourney}
+            />
           ) : (
-            <div className={`grid gap-4 ${selected === ALL ? 'sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2' : ''}`}>
-              {visible.map(j => {
-                const keys = j.stops.map(s => legKey(s.stopId, s.route));
-                return (
-                  <JourneyCard
-                    key={j.id}
-                    journey={j}
-                    departures={departuresByJourney.get(j.id) ?? []}
-                    now={now}
-                    loading={keys.some(k => !data[k]) && !keys.every(k => errors[k])}
-                    failed={keys.every(k => errors[k])}
-                    vehiclesByTrip={vehiclesByTrip}
-                    onRetry={refresh}
-                    onShowOnMap={showOnMap}
-                    onOpen={openDeparture(j.id)}
-                    compact={selected === ALL}
-                  />
-                );
-              })}
-            </div>
-          )}
-          {hasErrors && loaded && journeys.length > 0 && (
-            <p className="mt-4 text-center text-xs text-ink-3">Some lines couldn&apos;t be refreshed. Retrying automatically.</p>
+            <>
+              {selected === ALL && (
+                <UsualSection
+                  usual={usual}
+                  data={data}
+                  now={now}
+                  onOpen={(u, d) => openDeparture(d, usualJourneyId(u), u.label)}
+                  onEdit={u => setEditingUsual({ bus: u, isNew: false })}
+                />
+              )}
+              {journeys.length === 0 ? (
+                <div className="rounded-2xl border border-line bg-surface p-10 text-center shadow-card">
+                  <p className="text-lg font-semibold">No journeys yet</p>
+                  <p className="mt-1 text-sm text-ink-3">Add the stops you use and MBus will count down to your next bus.</p>
+                  <button onClick={() => setManagerOpen(true)} className="mt-5 rounded-xl bg-accent px-5 py-3 font-semibold text-accent-ink">
+                    Add a journey
+                  </button>
+                </div>
+              ) : (
+                <div className={`grid gap-4 ${selected === ALL ? 'sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2' : ''}`}>
+                  {visible.map(j => {
+                    const keys = j.stops.map(s => legKey(s.stopId, s.route, s.toStopId));
+                    return (
+                      <JourneyCard
+                        key={j.id}
+                        journey={j}
+                        departures={departuresByJourney.get(j.id) ?? []}
+                        now={now}
+                        loading={keys.some(k => !data[k]) && !keys.every(k => errors[k])}
+                        failed={keys.every(k => errors[k])}
+                        vehiclesByTrip={vehiclesByTrip}
+                        onRetry={refresh}
+                        onShowOnMap={showOnMap}
+                        onOpen={d => openDeparture(d, j.id)}
+                        compact={selected === ALL}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+              {selected === ALL && usual.length === 0 && journeys.length > 0 && (
+                <p className="mt-4 rounded-xl bg-surface-2 px-4 py-3 text-sm text-ink-2">
+                  Tip: tap a departure and choose <span className="font-medium">Make this my usual bus</span> to get a leave-by time and reminders.
+                </p>
+              )}
+              {hasErrors && (
+                <p className="mt-4 text-center text-xs text-ink-3">Some lines couldn&apos;t be refreshed. Retrying automatically.</p>
+              )}
+            </>
           )}
 
           <footer className="mt-10 space-y-1 pb-24 text-center text-xs text-ink-3 lg:pb-6">
@@ -319,14 +486,13 @@ export default function Home() {
               </a>
               . Map © OpenStreetMap contributors, OpenFreeMap.
             </p>
-            <p>Unofficial. Auto-refreshes every 30 s while open.</p>
+            <p>
+              Unofficial. Auto-refreshes every 30 s while open. <Link href="/about" className="underline hover:text-ink">Features &amp; roadmap</Link>
+            </p>
           </footer>
         </section>
 
-        <section
-          aria-label="Live map"
-          className={`${mobileView === 'map' ? 'block' : 'hidden'} lg:block lg:py-6`}
-        >
+        <section aria-label="Live map" className={`${mobileView === 'map' ? 'block' : 'hidden'} lg:block lg:py-6`}>
           <div className="h-[calc(100dvh-8.5rem-env(safe-area-inset-top))] lg:sticky lg:top-[8.5rem] lg:h-[calc(100dvh-10rem)] lg:overflow-hidden lg:rounded-2xl lg:border lg:border-line lg:shadow-card">
             {loaded && (
               <LiveMap
@@ -334,6 +500,7 @@ export default function Home() {
                 vehicles={vehicles}
                 focus={focus}
                 visibleKey={mobileView}
+                userPosition={isNearby ? geo.position : null}
                 className="h-full w-full"
               />
             )}
@@ -369,7 +536,7 @@ export default function Home() {
         <DepartureSheet
           departure={trackedLive.departure}
           current={trackedLive.current}
-          journeyName={trackedLive.journeyName}
+          journeyName={trackedLive.title}
           now={now}
           vehicle={trackedLive.departure.schedule.tripId ? vehiclesByTrip.get(trackedLive.departure.schedule.tripId) : undefined}
           wakeSupported={wake.supported}
@@ -380,7 +547,33 @@ export default function Home() {
             setTracked(null);
             showOnMap(target);
           }}
+          isUsual={Boolean(usualFor(trackedLive.departure))}
+          onUsual={() => startUsual(trackedLive.departure)}
           onClose={() => setTracked(null)}
+        />
+      )}
+
+      {editingUsual && (
+        <UsualBusEditor
+          key={editingUsual.bus.id}
+          initial={editingUsual.bus}
+          isNew={editingUsual.isNew}
+          push={push.state}
+          onEnablePush={push.enable}
+          onTestPush={push.test}
+          onSave={u => {
+            updateUsual(editingUsual.isNew ? [...usual, u] : usual.map(x => (x.id === u.id ? u : x)));
+            setEditingUsual(null);
+          }}
+          onDelete={
+            editingUsual.isNew
+              ? undefined
+              : () => {
+                  updateUsual(usual.filter(x => x.id !== editingUsual.bus.id));
+                  setEditingUsual(null);
+                }
+          }
+          onClose={() => setEditingUsual(null)}
         />
       )}
 

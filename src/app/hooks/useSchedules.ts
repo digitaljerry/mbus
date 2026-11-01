@@ -6,7 +6,8 @@ import { usePolling } from './usePolling';
 
 export const REFRESH_INTERVAL_MS = 30 * 1000;
 
-export const legKey = (stopId: string, route: string) => `${stopId}:${route.toUpperCase()}`;
+export const legKey = (stopId: string, route: string, toStopId?: string) =>
+  `${stopId}:${route.toUpperCase()}${toStopId ? `>${toStopId}` : ''}`;
 
 interface State {
   data: Record<string, ScheduleResponse>;
@@ -21,9 +22,9 @@ export function useSchedules(journeys: BusStop[]) {
   const inFlight = useRef(false);
 
   const legs = useMemo(() => {
-    const map = new Map<string, { stopId: string; route: string }>();
+    const map = new Map<string, { stopId: string; route: string; toStopId?: string }>();
     journeys.forEach(j => j.stops.forEach(s => {
-      if (s.stopId && s.route) map.set(legKey(s.stopId, s.route), { stopId: s.stopId, route: s.route.toUpperCase() });
+      if (s.stopId && s.route) map.set(legKey(s.stopId, s.route, s.toStopId), { stopId: s.stopId, route: s.route.toUpperCase(), toStopId: s.toStopId });
     }));
     return [...map.entries()];
   }, [journeys]);
@@ -33,26 +34,26 @@ export function useSchedules(journeys: BusStop[]) {
     if (inFlight.current || legs.length === 0) return;
     inFlight.current = true;
     setState(s => ({ ...s, refreshing: true }));
-    const results = await Promise.all(
-      legs.map(async ([key, { stopId, route }]) => {
+    // Each leg updates the board as soon as it arrives.
+    const errors: Record<string, boolean> = {};
+    await Promise.all(
+      legs.map(async ([key, { stopId, route, toStopId }]) => {
+        let body: ScheduleResponse | undefined;
         try {
-          const res = await fetch(`/api/schedules?stop=${encodeURIComponent(stopId)}&route=${encodeURIComponent(route)}`, { cache: 'no-store' });
-          const body = (await res.json()) as ScheduleResponse;
-          return { key, body, ok: res.ok && Array.isArray(body.schedules) };
-        } catch {
-          return { key, body: undefined, ok: false };
+          const to = toStopId ? `&to=${encodeURIComponent(toStopId)}` : '';
+          const res = await fetch(`/api/schedules?stop=${encodeURIComponent(stopId)}&route=${encodeURIComponent(route)}${to}`, { cache: 'no-store' });
+          const json = (await res.json()) as ScheduleResponse;
+          if (res.ok && Array.isArray(json.schedules)) body = json;
+        } catch {}
+        if (body) {
+          const ok = body;
+          setState(s => ({ ...s, data: { ...s.data, [key]: ok } }));
+        } else {
+          errors[key] = true;
         }
       })
     );
-    setState(s => {
-      const data = { ...s.data };
-      const errors: Record<string, boolean> = {};
-      for (const r of results) {
-        if (r.ok && r.body) data[r.key] = r.body;
-        else errors[r.key] = true;
-      }
-      return { data, errors, lastUpdated: Date.now(), refreshing: false };
-    });
+    setState(s => ({ ...s, errors, lastUpdated: Date.now(), refreshing: false }));
     inFlight.current = false;
     // legsSignature captures the legs content; legs identity alone changes every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps

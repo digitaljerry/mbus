@@ -7,7 +7,7 @@ import { DEFAULT_STOPS } from '../lib/defaults';
 import { routeColor } from '../lib/routeColors';
 import RouteBadge from './RouteBadge';
 
-interface StopListItem {
+export interface StopListItem {
   id: string;
   name: string;
 }
@@ -22,7 +22,7 @@ interface Props {
 const KNOWN_ROUTES = ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'P7', 'P8', 'P10', 'P11', 'P12', 'P15', 'P16', 'P18'];
 
 let stopListPromise: Promise<StopListItem[]> | null = null;
-function loadStopList() {
+export function loadStopList() {
   stopListPromise ??= fetch('/api/stops')
     .then(r => r.json())
     .then(b => (Array.isArray(b.stops) ? b.stops : []))
@@ -72,7 +72,7 @@ export default function BusStopManager({ isOpen, journeys, onClose, onChange }: 
   const save = () => {
     if (!draft) return;
     const stops = draft.stops
-      .map(s => ({ stopId: s.stopId.trim(), route: s.route.trim().toUpperCase() }))
+      .map(s => ({ stopId: s.stopId.trim(), route: s.route.trim().toUpperCase(), ...(s.toStopId ? { toStopId: s.toStopId } : {}) }))
       .filter(s => s.stopId && s.route);
     if (!draft.name.trim() || stops.length === 0) return;
     const journey: BusStop = {
@@ -138,7 +138,7 @@ export default function BusStopManager({ isOpen, journeys, onClose, onChange }: 
                       key={i}
                       leg={leg}
                       stopList={stopList}
-                      stopName={stopName.get(leg.stopId)}
+                      stopName={id => stopName.get(id)}
                       canRemove={draft.stops.length > 1}
                       onChange={next => setDraft({ ...draft, stops: draft.stops.map((s, j) => (j === i ? next : s)) })}
                       onRemove={() => setDraft({ ...draft, stops: draft.stops.filter((_, j) => j !== i) })}
@@ -178,6 +178,7 @@ export default function BusStopManager({ isOpen, journeys, onClose, onChange }: 
                           <span key={k} className="inline-flex items-center gap-1.5 text-xs text-ink-3">
                             <RouteBadge route={s.route} color={routeColor(s.route)} size="sm" />
                             {stopName.get(s.stopId) ?? `Stop ${s.stopId}`}
+                            {s.toStopId && <> → {stopName.get(s.toStopId) ?? `#${s.toStopId}`}</>}
                           </span>
                         ))}
                       </div>
@@ -256,62 +257,22 @@ function LegEditor({
 }: {
   leg: StopRoute;
   stopList: StopListItem[];
-  stopName?: string;
+  stopName: (id: string) => string | undefined;
   canRemove: boolean;
   onChange: (leg: StopRoute) => void;
   onRemove: () => void;
 }) {
-  const [query, setQuery] = useState('');
-  const [open, setOpen] = useState(false);
-
-  const matches = useMemo(() => {
-    const q = query.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-    if (!q) return [];
-    return stopList
-      .filter(s => s.id === q || s.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q))
-      .slice(0, 8);
-  }, [query, stopList]);
-
   return (
     <div className="rounded-2xl border border-line p-3">
       <div className="flex items-start gap-2">
-        <div className="relative min-w-0 flex-1">
-          <span className="text-xs font-medium text-ink-3">Stop</span>
-          {leg.stopId && !open ? (
-            <button onClick={() => { setOpen(true); setQuery(''); }} className="input mt-1 flex w-full items-center justify-between text-left">
-              <span className="truncate">{stopName ?? 'Stop'} <span className="text-ink-3">#{leg.stopId}</span></span>
-              <Pencil className="size-3.5 shrink-0 text-ink-3" />
-            </button>
-          ) : (
-            <div className="relative mt-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-3" />
-              <input
-                value={query}
-                onChange={e => { setQuery(e.target.value); setOpen(true); }}
-                onFocus={() => setOpen(true)}
-                onBlur={() => setTimeout(() => setOpen(false), 150)}
-                placeholder="Search stop name or number"
-                className="input pl-9"
-                inputMode="search"
-              />
-              {open && matches.length > 0 && (
-                <ul className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-line bg-surface py-1 shadow-card">
-                  {matches.map(s => (
-                    <li key={s.id}>
-                      <button
-                        onMouseDown={e => e.preventDefault()}
-                        onClick={() => { onChange({ ...leg, stopId: s.id }); setOpen(false); setQuery(''); }}
-                        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-surface-2"
-                      >
-                        <span className="truncate">{s.name}</span>
-                        <span className="shrink-0 text-xs text-ink-3">#{s.id}</span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
+        <div className="min-w-0 flex-1">
+          <StopPicker
+            label="Get on at"
+            value={leg.stopId}
+            name={stopName(leg.stopId)}
+            stopList={stopList}
+            onChange={stopId => onChange({ ...leg, stopId })}
+          />
         </div>
         {canRemove && (
           <button onClick={onRemove} aria-label="Remove this stop" className="mt-5 rounded-lg p-2.5 text-ink-3 hover:bg-surface-2">
@@ -344,6 +305,91 @@ function LegEditor({
           />
         </div>
       </div>
+      <div className="mt-3">
+        <StopPicker
+          label="Get off at (optional, for arrival times)"
+          value={leg.toStopId ?? ''}
+          name={leg.toStopId ? stopName(leg.toStopId) : undefined}
+          stopList={stopList}
+          onChange={toStopId => onChange({ ...leg, toStopId: toStopId || undefined })}
+          clearable
+        />
+      </div>
+    </div>
+  );
+}
+
+const normalize = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+export function StopPicker({
+  label,
+  value,
+  name,
+  stopList,
+  onChange,
+  clearable,
+}: {
+  label: string;
+  value: string;
+  name?: string;
+  stopList: StopListItem[];
+  onChange: (stopId: string) => void;
+  clearable?: boolean;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const matches = useMemo(() => {
+    const q = normalize(query.trim());
+    if (!q) return [];
+    return stopList.filter(s => s.id === q || normalize(s.name).includes(q)).slice(0, 8);
+  }, [query, stopList]);
+
+  return (
+    <div className="relative">
+      <span className="text-xs font-medium text-ink-3">{label}</span>
+      {value && !open ? (
+        <div className="mt-1 flex items-center gap-1">
+          <button onClick={() => { setOpen(true); setQuery(''); }} className="input flex w-full items-center justify-between text-left">
+            <span className="truncate">{name ?? 'Stop'} <span className="text-ink-3">#{value}</span></span>
+            <Pencil className="size-3.5 shrink-0 text-ink-3" />
+          </button>
+          {clearable && (
+            <button onClick={() => onChange('')} aria-label="Clear" className="rounded-lg p-2.5 text-ink-3 hover:bg-surface-2">
+              <X className="size-4" />
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="relative mt-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-3" />
+          <input
+            value={query}
+            onChange={e => { setQuery(e.target.value); setOpen(true); }}
+            onFocus={() => setOpen(true)}
+            onBlur={() => setTimeout(() => setOpen(false), 150)}
+            placeholder="Search stop name or number"
+            className="input pl-9"
+            inputMode="search"
+          />
+          {open && matches.length > 0 && (
+            <ul className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-line bg-surface py-1 shadow-card">
+              {matches.map(s => (
+                <li key={s.id}>
+                  <button
+                    onMouseDown={e => e.preventDefault()}
+                    onClick={() => { onChange(s.id); setOpen(false); setQuery(''); }}
+                    className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-surface-2"
+                  >
+                    <span className="truncate">{s.name}</span>
+                    <span className="shrink-0 text-xs text-ink-3">#{s.id}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

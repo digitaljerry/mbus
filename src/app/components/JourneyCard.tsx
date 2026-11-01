@@ -13,6 +13,8 @@ export interface Departure {
   color: string;
   stopId: string;
   stopName?: string;
+  toStopId?: string;
+  toStopName?: string;
   source: ScheduleResponse['source'];
 }
 
@@ -20,7 +22,7 @@ export interface Departure {
 export function mergeDepartures(journey: BusStop, data: Record<string, ScheduleResponse>, now: number): Departure[] {
   const out: Departure[] = [];
   for (const leg of journey.stops) {
-    const resp = data[legKey(leg.stopId, leg.route)];
+    const resp = data[legKey(leg.stopId, leg.route, leg.toStopId)];
     resp?.schedules.forEach(schedule => {
       out.push({
         schedule,
@@ -28,6 +30,8 @@ export function mergeDepartures(journey: BusStop, data: Record<string, ScheduleR
         color: resp.routeColor,
         stopId: resp.stop,
         stopName: resp.stopName,
+        toStopId: resp.toStop,
+        toStopName: resp.toStopName,
         source: resp.source,
       });
     });
@@ -132,6 +136,11 @@ export default function JourneyCard({ journey, departures, now, loading, failed,
                       <RouteBadge route={d.route} color={d.color} size="sm" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm text-ink-2">{d.schedule.destination ?? d.stopName}</p>
+                        {d.schedule.arrivalTime && (
+                          <p className="truncate text-xs text-ink-3 tabular">
+                            arrives {d.schedule.arrivalEstimated ? '~' : ''}{d.schedule.arrivalTime}
+                          </p>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-baseline gap-2 tabular">
                         {day && <span className="text-xs font-medium text-ink-3">{day}</span>}
@@ -175,6 +184,15 @@ function NextDeparture({ d, now, vehicle, onShowOnMap, onOpen }: { d: Departure;
             {delayed && <span className="ml-1 line-through opacity-70">{d.schedule.scheduledTime}</span>}
             {d.stopName && <> · {d.stopName}</>}
           </p>
+          {d.schedule.arrivalTime && (
+            <p className="mt-0.5 text-xs font-medium text-ink-2 tabular">
+              Arrives {d.schedule.arrivalEstimated ? '~' : ''}{d.schedule.arrivalTime}
+              {d.toStopName && <span className="font-normal text-ink-3"> at {d.toStopName}</span>}
+              {now > 0 && d.schedule.arrivalEpoch && (
+                <span className="font-normal text-ink-3"> · {Math.max(1, Math.round((d.schedule.arrivalEpoch - d.schedule.epoch) / 60000))} min ride</span>
+              )}
+            </p>
+          )}
         </div>
         <div className="shrink-0 text-right" aria-live="polite" aria-label={c.label}>
           <span className={`block text-4xl font-bold leading-none tracking-tight tabular sm:text-5xl ${c.urgent ? 'text-accent' : ''}`}>

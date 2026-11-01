@@ -1,6 +1,8 @@
 export interface StopRoute {
   stopId: string;
   route: string;
+  /** Optional stop where you get off, for arrival times. */
+  toStopId?: string;
 }
 
 export interface BusStop {
@@ -21,6 +23,11 @@ export interface Schedule {
   delay?: number; // delay in seconds
   realtime?: boolean; // whether real-time data is available
   tripId?: string;
+  /** Arrival at the journey's destination stop, when one is set. */
+  arrivalTime?: string;
+  arrivalEpoch?: number;
+  /** True when the arrival is derived from typical travel time, not the trip itself. */
+  arrivalEstimated?: boolean;
 }
 
 export type ScheduleSource = 'brezavta' | 'marprom' | 'none';
@@ -37,6 +44,8 @@ export interface ScheduleResponse {
   url: string;
   source: ScheduleSource;
   note?: string;
+  toStop?: string;
+  toStopName?: string;
   fetchedAt: number;
 }
 

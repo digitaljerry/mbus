@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect } from 'react';
-import { Bus, MapPin, Sun, SunDim, X } from 'lucide-react';
+import { Bus, MapPin, Star, Sun, SunDim, X } from 'lucide-react';
 import type { Vehicle } from '../types';
 import { countdown, dayLabel, delayInfo } from '../lib/format';
 import { zonedDateString } from '../lib/time';
@@ -11,7 +11,7 @@ import type { Departure } from './JourneyCard';
 /** Stable identity for a departure across refreshes (times shift with delays). */
 export function departureKey(d: Departure): string {
   const scheduledEpoch = d.schedule.epoch - (d.schedule.delay ?? 0) * 1000;
-  return [d.stopId, d.route, d.schedule.tripId ?? '', d.schedule.scheduledTime ?? d.schedule.time, zonedDateString(new Date(scheduledEpoch))].join('|');
+  return [d.stopId, d.route, d.schedule.scheduledTime ?? d.schedule.time, zonedDateString(new Date(scheduledEpoch))].join('|');
 }
 
 interface Props {
@@ -26,6 +26,9 @@ interface Props {
   keepAwake: boolean;
   onToggleKeepAwake: () => void;
   onShowOnMap: (target: { vehicle?: Vehicle; stopId?: string }) => void;
+  /** Set when this departure is one of your usual buses. */
+  isUsual: boolean;
+  onUsual: () => void;
   onClose: () => void;
 }
 
@@ -40,6 +43,8 @@ export default function DepartureSheet({
   keepAwake,
   onToggleKeepAwake,
   onShowOnMap,
+  isUsual,
+  onUsual,
   onClose,
 }: Props) {
   const c = countdown(d.schedule.epoch, now);
@@ -119,6 +124,20 @@ export default function DepartureSheet({
             {vehicle ? <Bus className="size-4 text-live" aria-hidden /> : <MapPin className="size-4" aria-hidden />}
             {vehicle ? (vehicle.nextStop ? `See bus on map · near ${vehicle.nextStop}` : 'See bus on map') : 'Show stop on map'}
           </button>
+          <button
+            onClick={onUsual}
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-surface-2 px-4 py-3 text-sm font-semibold"
+          >
+            <Star className={`size-4 ${isUsual ? 'fill-current text-warn' : ''}`} aria-hidden />
+            {isUsual ? 'Your usual bus · Edit' : 'Make this my usual bus'}
+          </button>
+          {d.schedule.arrivalTime && (
+            <p className="text-center text-xs text-ink-2 tabular">
+              Arrives {d.schedule.arrivalEstimated ? '~' : ''}
+              {d.schedule.arrivalTime}
+              {d.toStopName ? ` at ${d.toStopName}` : ''}
+            </p>
+          )}
           {wakeSupported && (
             <button
               onClick={onToggleKeepAwake}

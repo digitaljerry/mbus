@@ -27,6 +27,8 @@ interface Props {
   focus?: MapFocus;
   /** Bumped when the map becomes visible after being hidden (mobile tab). */
   visibleKey?: string | number;
+  /** Your position, shown as a blue dot (Nearby view). */
+  userPosition?: { lat: number; lon: number } | null;
   className?: string;
 }
 
@@ -66,7 +68,7 @@ function styleMarkerEl(el: HTMLElement, v: Vehicle, focused: boolean) {
   el.classList.toggle('bus-marker--focused', focused);
 }
 
-export default function LiveMap({ stops, vehicles, focus, visibleKey, className }: Props) {
+export default function LiveMap({ stops, vehicles, focus, visibleKey, userPosition, className }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
   const libRef = useRef<typeof import('maplibre-gl') | null>(null);
@@ -277,6 +279,27 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, className 
     };
   }, [vehicles, ready, focusedVehicle]);
 
+  // --- your position ----------------------------------------------------
+  const userMarkerRef = useRef<Marker | null>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    const lib = libRef.current;
+    if (!ready || !map || !lib) return;
+    if (!userPosition) {
+      userMarkerRef.current?.remove();
+      userMarkerRef.current = null;
+      return;
+    }
+    if (!userMarkerRef.current) {
+      const el = document.createElement('div');
+      el.className = 'user-dot';
+      el.setAttribute('aria-label', 'You are here');
+      userMarkerRef.current = new lib.Marker({ element: el }).setLngLat([userPosition.lon, userPosition.lat]).addTo(map);
+    } else {
+      userMarkerRef.current.setLngLat([userPosition.lon, userPosition.lat]);
+    }
+  }, [userPosition, ready]);
+
   // --- focus requests from the board -----------------------------------
   useEffect(() => {
     const map = mapRef.current;
@@ -299,7 +322,10 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, className 
     const map = mapRef.current;
     const lib = libRef.current;
     if (!map || !lib) return;
-    const pts = [...stops.map(s => [s.lon, s.lat] as [number, number]), ...vehicles.map(v => [v.lon, v.lat] as [number, number])];
+    const pts = [
+      ...stops.map(s => [s.lon, s.lat] as [number, number]),
+      ...(userPosition ? [[userPosition.lon, userPosition.lat] as [number, number]] : vehicles.map(v => [v.lon, v.lat] as [number, number])),
+    ];
     if (!pts.length) return map.flyTo({ center: MARIBOR, zoom: 12.5 });
     const bounds = new lib.LngLatBounds();
     pts.forEach(p => bounds.extend(p));
