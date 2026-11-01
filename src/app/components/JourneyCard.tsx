@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Bus, MapPin, Moon, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Bus, ChevronRight, MapPin, Moon, RefreshCw } from 'lucide-react';
 import type { BusStop, Schedule, ScheduleResponse, Vehicle } from '../types';
 import { countdown, dayLabel, delayInfo } from '../lib/format';
 import { splitJourneyName } from '../lib/defaults';
@@ -61,10 +61,11 @@ interface Props {
   vehiclesByTrip: Map<string, Vehicle>;
   onRetry: () => void;
   onShowOnMap: (target: { vehicle?: Vehicle; stopId?: string }) => void;
+  onOpen: (d: Departure) => void;
   compact?: boolean;
 }
 
-export default function JourneyCard({ journey, departures, now, loading, failed, vehiclesByTrip, onRetry, onShowOnMap, compact }: Props) {
+export default function JourneyCard({ journey, departures, now, loading, failed, vehiclesByTrip, onRetry, onShowOnMap, onOpen, compact }: Props) {
   const { from, to } = splitJourneyName(journey.name);
   const [next, ...rest] = departures;
   const later = rest.slice(0, compact ? 2 : 3);
@@ -115,14 +116,19 @@ export default function JourneyCard({ journey, departures, now, loading, failed,
           </div>
         ) : (
           <>
-            <NextDeparture d={next} now={now} vehicle={next.schedule.tripId ? vehiclesByTrip.get(next.schedule.tripId) : undefined} onShowOnMap={onShowOnMap} />
+            <NextDeparture d={next} now={now} vehicle={next.schedule.tripId ? vehiclesByTrip.get(next.schedule.tripId) : undefined} onShowOnMap={onShowOnMap} onOpen={onOpen} />
             {later.length > 0 && (
               <ul className="mt-2 divide-y divide-line">
                 {later.map((d, i) => {
                   const c = countdown(d.schedule.epoch, now);
                   const day = now ? dayLabel(d.schedule.epoch, now) : undefined;
                   return (
-                    <li key={`${d.stopId}-${d.route}-${d.schedule.epoch}-${i}`} className="flex items-center gap-3 py-2.5">
+                    <li key={`${d.stopId}-${d.route}-${d.schedule.epoch}-${i}`}>
+                      <button
+                        onClick={() => onOpen(d)}
+                        className="-mx-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-lg px-2 py-2.5 text-left hover:bg-surface-2"
+                        aria-label={`${d.route} to ${d.schedule.destination ?? ''} at ${d.schedule.time}, ${c.label}. Open countdown`}
+                      >
                       <RouteBadge route={d.route} color={d.color} size="sm" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm text-ink-2">{d.schedule.destination ?? d.stopName}</p>
@@ -130,10 +136,11 @@ export default function JourneyCard({ journey, departures, now, loading, failed,
                       <div className="flex shrink-0 items-baseline gap-2 tabular">
                         {day && <span className="text-xs font-medium text-ink-3">{day}</span>}
                         <span className="text-sm text-ink-3">{d.schedule.time}</span>
-                        <span className="w-16 text-right text-sm font-semibold">
+                        <span className={`w-16 text-right text-sm font-semibold ${c.urgent ? 'text-accent' : ''}`}>
                           {now ? (c.unit ? `${c.value} ${c.unit}` : c.value) : '—'}
                         </span>
                       </div>
+                      </button>
                     </li>
                   );
                 })}
@@ -146,14 +153,14 @@ export default function JourneyCard({ journey, departures, now, loading, failed,
   );
 }
 
-function NextDeparture({ d, now, vehicle, onShowOnMap }: { d: Departure; now: number; vehicle?: Vehicle; onShowOnMap: Props['onShowOnMap'] }) {
+function NextDeparture({ d, now, vehicle, onShowOnMap, onOpen }: { d: Departure; now: number; vehicle?: Vehicle; onShowOnMap: Props['onShowOnMap']; onOpen: Props['onOpen'] }) {
   const c = countdown(d.schedule.epoch, now);
   const day = now ? dayLabel(d.schedule.epoch, now) : undefined;
   const delayed = d.schedule.realtime && d.schedule.scheduledTime && d.schedule.scheduledTime !== d.schedule.time;
 
   return (
     <div className="rounded-xl bg-surface-2 p-3.5 sm:p-4">
-      <div className="flex items-center justify-between gap-3">
+      <button onClick={() => onOpen(d)} className="flex w-full items-center justify-between gap-3 text-left" aria-label={`${d.route} ${c.label}. Open countdown`}>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <RouteBadge route={d.route} color={d.color} size="md" />
@@ -175,8 +182,8 @@ function NextDeparture({ d, now, vehicle, onShowOnMap }: { d: Departure; now: nu
           </span>
           {c.unit && <span className="text-sm font-medium text-ink-3">{c.unit}</span>}
         </div>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
+      </button>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         {vehicle ? (
           <button
             onClick={() => onShowOnMap({ vehicle })}
@@ -193,6 +200,12 @@ function NextDeparture({ d, now, vehicle, onShowOnMap }: { d: Departure; now: nu
             <MapPin className="size-3.5" aria-hidden /> Show stop
           </button>
         )}
+        <button
+          onClick={() => onOpen(d)}
+          className="ml-auto inline-flex items-center gap-0.5 rounded-lg px-1.5 py-1.5 text-xs font-medium text-ink-3 hover:text-ink"
+        >
+          Track <ChevronRight className="size-3.5" aria-hidden />
+        </button>
       </div>
     </div>
   );

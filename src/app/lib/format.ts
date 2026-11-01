@@ -11,12 +11,27 @@ export interface Countdown {
   departed: boolean;
 }
 
+export const SECONDS_THRESHOLD_MS = 10 * 60_000;
+
 export function countdown(epoch: number, now: number): Countdown {
   const diff = epoch - now;
   if (diff <= -30_000) return { value: 'Gone', unit: '', label: 'departed', urgent: false, departed: true };
-  if (diff < 60_000) return { value: 'Now', unit: '', label: 'departing now', urgent: true, departed: false };
+  if (diff <= 0) return { value: 'Now', unit: '', label: 'departing now', urgent: true, departed: false };
+  if (diff < SECONDS_THRESHOLD_MS) {
+    // Under 10 minutes: m:ss so you can time the walk to the stop.
+    const total = Math.ceil(diff / 1000);
+    const m = Math.floor(total / 60);
+    const sec = String(total % 60).padStart(2, '0');
+    return {
+      value: `${m}:${sec}`,
+      unit: '',
+      label: m > 0 ? `in ${m} min ${total % 60} s` : `in ${total % 60} s`,
+      urgent: diff <= 3 * 60_000,
+      departed: false,
+    };
+  }
   const mins = Math.floor(diff / 60_000);
-  if (mins < 60) return { value: String(mins), unit: 'min', label: `in ${mins} min`, urgent: mins <= 3, departed: false };
+  if (mins < 60) return { value: String(mins), unit: 'min', label: `in ${mins} min`, urgent: false, departed: false };
   const h = Math.floor(mins / 60);
   const m = String(mins % 60).padStart(2, '0');
   return { value: `${h} h ${m}`, unit: '', label: `in ${h} h ${m} min`, urgent: false, departed: false };

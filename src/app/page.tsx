@@ -2,17 +2,19 @@
 
 import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bus, LayoutList, Map as MapIcon, RefreshCw, Settings2, WifiOff } from 'lucide-react';
+import { Bus, LayoutList, Map as MapIcon, RefreshCw, Settings2, Sun, WifiOff } from 'lucide-react';
 import type { BusStop, Vehicle } from './types';
 import { loadPinnedStops, savePinnedStops } from './utils/storage';
 import { DEFAULT_STOPS, splitJourneyName } from './lib/defaults';
-import { ago } from './lib/format';
+import { ago, SECONDS_THRESHOLD_MS } from './lib/format';
 import { routeColor } from './lib/routeColors';
 import { useNow } from './hooks/useNow';
 import { legKey, useSchedules } from './hooks/useSchedules';
 import { useVehicles } from './hooks/useVehicles';
+import { useWakeLock } from './hooks/useWakeLock';
 import BusStopManager from './components/BusStopManager';
-import JourneyCard, { mergeDepartures } from './components/JourneyCard';
+import JourneyCard, { mergeDepartures, type Departure } from './components/JourneyCard';
+import DepartureSheet, { departureKey } from './components/DepartureSheet';
 import type { MapFocus, MapStop } from './components/LiveMap';
 
 const LiveMap = dynamic(() => import('./components/LiveMap'), {
@@ -22,6 +24,7 @@ const LiveMap = dynamic(() => import('./components/LiveMap'), {
 
 const SELECTED_KEY = 'mbus-selected-journey';
 const MIGRATION_KEY = 'mbus-journeys-v2';
+const KEEP_AWAKE_KEY = 'mbus-keep-awake';
 
 // One-time: give existing users the Home → School / Home → Office shortcuts.
 function addNewDefaultJourneysOnce(stops: BusStop[]): BusStop[] {
@@ -49,6 +52,8 @@ export default function Home() {
   const [mobileView, setMobileView] = useState<'board' | 'map'>('board');
   const [focus, setFocus] = useState<MapFocus>();
   const [online, setOnline] = useState(true);
+  const [tracked, setTracked] = useState<{ key: string; journeyId: string; last: Departure } | null>(null);
+  const [keepAwake, setKeepAwake] = useState(true);
   const now = useNow(1000);
 
   // Load journeys + selection (URL ?j= wins, so home-screen shortcuts work).
@@ -68,6 +73,9 @@ export default function Home() {
     } catch {}
     const want = fromUrl ?? stored ?? ALL;
     setSelected(want === ALL || stops.some(s => s.id === want) ? want : ALL);
+    try {
+      setKeepAwake(localStorage.getItem(KEEP_AWAKE_KEY) !== 'off');
+    } catch {}
     setLoaded(true);
 
     const updateOnline = () => setOnline(navigator.onLine);
@@ -134,6 +142,42 @@ export default function Home() {
     setMobileView('map');
   }, []);
 
+  // Departures per visible journey, recomputed every tick.
+  const departuresByJourney = useMemo(
+    () => new Map(visible.map(j => [j.id, mergeDepartures(j, data, now)])),
+    [visible, data, now]
+  );
+
+  // The tracked departure, refreshed from the latest data (delays move it).
+  const trackedLive = useMemo(() => {
+    if (!tracked) return null;
+    const j = journeys.find(x => x.id === tracked.journeyId);
+    const fresh = j ? mergeDepartures(j, data, 0).find(d => departureKey(d) === tracked.key) : undefined;
+    return { departure: fresh ?? tracked.last, current: Boolean(fresh), journeyName: j?.name };
+  }, [tracked, journeys, data]);
+
+  const openDeparture = useCallback(
+    (journeyId: string) => (d: Departure) => setTracked({ key: departureKey(d), journeyId, last: d }),
+    []
+  );
+
+  // Keep the screen on while a bus you're looking at is about to leave.
+  const soonest = useMemo(() => {
+    const list = trackedLive?.current ? [trackedLive.departure] : [...departuresByJourney.values()].map(l => l[0]).filter(Boolean);
+    return Math.min(...list.map(d => d.schedule.epoch), Infinity);
+  }, [departuresByJourney, trackedLive]);
+  const departingSoon = now > 0 && soonest - now < SECONDS_THRESHOLD_MS && soonest - now > -30_000;
+  const wake = useWakeLock(keepAwake && departingSoon);
+
+  const toggleKeepAwake = useCallback(() => {
+    setKeepAwake(v => {
+      try {
+        localStorage.setItem(KEEP_AWAKE_KEY, v ? 'off' : 'on');
+      } catch {}
+      return !v;
+    });
+  }, []);
+
   const hasErrors = Object.keys(errors).length > 0;
 
   return (
@@ -152,6 +196,17 @@ export default function Home() {
           </div>
 
           <div className="ml-auto flex items-center gap-1.5">
+            {wake.held && (
+              <button
+                onClick={toggleKeepAwake}
+                className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1.5 text-xs font-medium text-ink-2"
+                title="Screen kept on because a bus leaves within 10 minutes. Tap to turn off."
+                aria-label="Screen kept on. Turn off"
+              >
+                <Sun className="size-3.5 text-warn" aria-hidden />
+                <span className="hidden sm:inline">Screen on</span>
+              </button>
+            )}
             <button
               onClick={refresh}
               className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-medium text-ink-2 hover:bg-surface-2"
@@ -234,13 +289,14 @@ export default function Home() {
                   <JourneyCard
                     key={j.id}
                     journey={j}
-                    departures={mergeDepartures(j, data, now)}
+                    departures={departuresByJourney.get(j.id) ?? []}
                     now={now}
                     loading={keys.some(k => !data[k]) && !keys.every(k => errors[k])}
                     failed={keys.every(k => errors[k])}
                     vehiclesByTrip={vehiclesByTrip}
                     onRetry={refresh}
                     onShowOnMap={showOnMap}
+                    onOpen={openDeparture(j.id)}
                     compact={selected === ALL}
                   />
                 );
@@ -308,6 +364,25 @@ export default function Home() {
           ))}
         </div>
       </div>
+
+      {trackedLive && (
+        <DepartureSheet
+          departure={trackedLive.departure}
+          current={trackedLive.current}
+          journeyName={trackedLive.journeyName}
+          now={now}
+          vehicle={trackedLive.departure.schedule.tripId ? vehiclesByTrip.get(trackedLive.departure.schedule.tripId) : undefined}
+          wakeSupported={wake.supported}
+          wakeHeld={wake.held}
+          keepAwake={keepAwake}
+          onToggleKeepAwake={toggleKeepAwake}
+          onShowOnMap={target => {
+            setTracked(null);
+            showOnMap(target);
+          }}
+          onClose={() => setTracked(null)}
+        />
+      )}
 
       <BusStopManager isOpen={managerOpen} journeys={journeys} onClose={() => setManagerOpen(false)} onChange={updateJourneys} />
     </div>
