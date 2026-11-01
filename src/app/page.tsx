@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Settings2, Sun, WifiOff } from 'lucide-react';
+import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Settings2, Star, Sun, WifiOff } from 'lucide-react';
 import type { BusStop, Vehicle } from './types';
 import { loadPinnedStops, loadUsualBuses, savePinnedStops, saveUsualBuses } from './utils/storage';
 import { DEFAULT_STOPS, splitJourneyName } from './lib/defaults';
@@ -23,6 +23,7 @@ import DepartureSheet, { departureKey } from './components/DepartureSheet';
 import UsualSection, { usualDeparture, usualJourneyId } from './components/UsualSection';
 import UsualBusEditor from './components/UsualBusEditor';
 import NearbyView, { type NearbyStop } from './components/NearbyView';
+import UsualView from './components/UsualView';
 import type { MapFocus, MapStop } from './components/LiveMap';
 
 const LiveMap = dynamic(() => import('./components/LiveMap'), {
@@ -35,6 +36,7 @@ const MIGRATION_KEY = 'mbus-journeys-v2';
 const KEEP_AWAKE_KEY = 'mbus-keep-awake';
 const ALL = 'all';
 const NEARBY = 'nearby';
+const USUAL = 'usual';
 
 // One-time: give existing users the Home → School / Home → Office shortcuts.
 function addNewDefaultJourneysOnce(stops: BusStop[]): BusStop[] {
@@ -96,7 +98,7 @@ export default function Home() {
       stored = localStorage.getItem(SELECTED_KEY);
     } catch {}
     const want = params.get('j') ?? stored ?? ALL;
-    setSelected(want === ALL || want === NEARBY || stops.some(s => s.id === want) ? want : ALL);
+    setSelected(want === ALL || want === NEARBY || want === USUAL || stops.some(s => s.id === want) ? want : ALL);
     // Opened from a reminder notification: show that bus.
     const usualId = params.get('usual');
     if (usualId) {
@@ -135,7 +137,7 @@ export default function Home() {
     (next: BusStop[]) => {
       setJourneys(next);
       savePinnedStops(next);
-      if (selected !== ALL && selected !== NEARBY && !next.some(j => j.id === selected)) select(ALL);
+      if (selected !== ALL && selected !== NEARBY && selected !== USUAL && !next.some(j => j.id === selected)) select(ALL);
     },
     [selected, select]
   );
@@ -146,6 +148,9 @@ export default function Home() {
   }, []);
 
   const isNearby = selected === NEARBY;
+  const isUsualView = selected === USUAL;
+  // Views that show usual buses (and their stops/buses on the map).
+  const showsUsual = selected === ALL || isUsualView;
   const visible = useMemo(
     () => (selected === ALL ? journeys : journeys.filter(j => j.id === selected)),
     [journeys, selected]
@@ -181,9 +186,9 @@ export default function Home() {
   const visibleRoutes = useMemo(() => {
     if (isNearby) return [...new Set(nearbyStops.flatMap(s => s.departures.map(d => d.route)))];
     const fromJourneys = visible.flatMap(j => j.stops.map(s => s.route.toUpperCase()));
-    const fromUsual = selected === ALL ? usual.map(u => u.route.toUpperCase()) : [];
+    const fromUsual = showsUsual ? usual.map(u => u.route.toUpperCase()) : [];
     return [...new Set([...fromJourneys, ...fromUsual])];
-  }, [visible, isNearby, nearbyStops, usual, selected]);
+  }, [visible, isNearby, nearbyStops, usual, showsUsual]);
   const { vehicles } = useVehicles(visibleRoutes, loaded);
 
   const vehiclesByTrip = useMemo(() => {
@@ -204,9 +209,9 @@ export default function Home() {
       }
     };
     visible.forEach(j => j.stops.forEach(s => add(s.stopId, s.route, s.toStopId)));
-    if (selected === ALL) usual.forEach(u => add(u.stopId, u.route, u.toStopId));
+    if (showsUsual) usual.forEach(u => add(u.stopId, u.route, u.toStopId));
     return [...m.values()];
-  }, [visible, data, isNearby, nearbyStops, usual, selected]);
+  }, [visible, data, isNearby, nearbyStops, usual, showsUsual]);
 
   const showOnMap = useCallback((target: { vehicle?: Vehicle; stopId?: string }) => {
     setFocus({ vehicleId: target.vehicle?.id, stopId: target.stopId, nonce: Date.now() });
@@ -300,12 +305,12 @@ export default function Home() {
   const soonest = useMemo(() => {
     if (trackedLive?.current) return trackedLive.departure.schedule.epoch;
     const list = [...departuresByJourney.values()].map(l => l[0]).filter(Boolean);
-    if (selected === ALL) usual.forEach(u => {
+    if (showsUsual) usual.forEach(u => {
       const d = now ? usualDeparture(u, data, now) : null;
       if (d) list.push(d);
     });
     return Math.min(...list.map(d => d.schedule.epoch), Infinity);
-  }, [departuresByJourney, trackedLive, usual, data, now, selected]);
+  }, [departuresByJourney, trackedLive, usual, data, now, showsUsual]);
   const departingSoon = now > 0 && soonest - now < SECONDS_THRESHOLD_MS && soonest - now > -30_000;
   const wake = useWakeLock(keepAwake && departingSoon);
 
@@ -322,6 +327,15 @@ export default function Home() {
   const chips = [
     { id: ALL, label: <>All journeys</> },
     { id: NEARBY, label: <><LocateFixed className="mr-1 inline size-4 -translate-y-px" aria-hidden />Nearby</> },
+    {
+      id: USUAL,
+      label: (
+        <>
+          <Star className="mr-1 inline size-4 -translate-y-px fill-current text-warn" aria-hidden />
+          Usual buses{usual.length > 0 && <span className="ml-1 opacity-60 tabular">{usual.length}</span>}
+        </>
+      ),
+    },
     ...journeys.map(j => {
       const { from, to } = splitJourneyName(j.name);
       return {
@@ -430,6 +444,18 @@ export default function Home() {
                 <div key={i} className="h-56 animate-pulse rounded-2xl bg-surface" />
               ))}
             </div>
+          ) : isUsualView ? (
+            <UsualView
+              usual={usual}
+              data={data}
+              now={now}
+              push={push.state}
+              onEnablePush={push.enable}
+              onOpen={(u, d) => openDeparture(d, usualJourneyId(u), u.label)}
+              onEdit={u => setEditingUsual({ bus: u, isNew: false })}
+              onBrowseJourneys={() => select(ALL)}
+              onBrowseNearby={() => select(NEARBY)}
+            />
           ) : isNearby ? (
             <NearbyView
               status={geo.status}
