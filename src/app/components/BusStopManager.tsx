@@ -1,339 +1,347 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { BusStop, StopRoute } from '../types';
-import { loadPinnedStops, addPinnedStop, updatePinnedStop, removePinnedStop, clearPinnedStops } from '../utils/storage';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown, ArrowUp, Pencil, Plus, RotateCcw, Search, Trash2, X } from 'lucide-react';
+import type { BusStop, StopRoute } from '../types';
+import { DEFAULT_STOPS } from '../lib/defaults';
+import { routeColor } from '../lib/routeColors';
+import RouteBadge from './RouteBadge';
 
-interface BusStopManagerProps {
-  isOpen: boolean;
-  onClose: () => void;
-  onStopsChange: (stops: BusStop[]) => void;
+interface StopListItem {
+  id: string;
+  name: string;
 }
 
-export default function BusStopManager({ isOpen, onClose, onStopsChange }: BusStopManagerProps) {
-  const [pinnedStops, setPinnedStops] = useState<BusStop[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [formData, setFormData] = useState<{
-    name: string;
-    description: string;
-    stops: StopRoute[];
-  }>({
-    name: '',
-    description: '',
-    stops: [{ stopId: '', route: '' }]
-  });
+interface Props {
+  isOpen: boolean;
+  journeys: BusStop[];
+  onClose: () => void;
+  onChange: (journeys: BusStop[]) => void;
+}
+
+const KNOWN_ROUTES = ['G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'P7', 'P8', 'P10', 'P11', 'P12', 'P15', 'P16', 'P18'];
+
+let stopListPromise: Promise<StopListItem[]> | null = null;
+function loadStopList() {
+  stopListPromise ??= fetch('/api/stops')
+    .then(r => r.json())
+    .then(b => (Array.isArray(b.stops) ? b.stops : []))
+    .catch(() => {
+      stopListPromise = null;
+      return [];
+    });
+  return stopListPromise;
+}
+
+type Draft = { id?: string; name: string; description: string; stops: StopRoute[] };
+const emptyDraft = (): Draft => ({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
+
+export default function BusStopManager({ isOpen, journeys, onClose, onChange }: Props) {
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [stopList, setStopList] = useState<StopListItem[]>([]);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      const stops = loadPinnedStops();
-      setPinnedStops(stops);
-    }
-  }, [isOpen]);
-
-  const handleAddStopRoute = () => {
-    setFormData({
-      ...formData,
-      stops: [...formData.stops, { stopId: '', route: '' }]
-    });
-  };
-
-  const handleRemoveStopRoute = (index: number) => {
-    if (formData.stops.length > 1) {
-      setFormData({
-        ...formData,
-        stops: formData.stops.filter((_, i) => i !== index)
-      });
-    }
-  };
-
-  const handleStopRouteChange = (index: number, field: 'stopId' | 'route', value: string) => {
-    const newStops = [...formData.stops];
-    newStops[index] = { ...newStops[index], [field]: value };
-    setFormData({ ...formData, stops: newStops });
-  };
-
-  const handleAdd = () => {
-    if (!formData.name || formData.stops.length === 0) {
-      alert('Please fill in Name and at least one Stop ID/Route combination');
+    if (!isOpen) {
+      setDraft(null);
       return;
     }
-
-    // Validate all stop/route pairs
-    const validStops = formData.stops.filter(s => s.stopId && s.route);
-    if (validStops.length === 0) {
-      alert('Please fill in at least one valid Stop ID and Route combination');
-      return;
-    }
-
-    const newStop: BusStop = {
-      id: `stop-${Date.now()}`,
-      name: formData.name,
-      stops: validStops,
-      description: formData.description || undefined
+    loadStopList().then(setStopList);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    dialogRef.current?.focus();
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
     };
+  }, [isOpen, onClose]);
 
-    addPinnedStop(newStop);
-    const updated = loadPinnedStops();
-    setPinnedStops(updated);
-    onStopsChange(updated);
-    
-    // Reset form
-    setFormData({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
-  };
-
-  const handleEdit = (stop: BusStop) => {
-    setEditingId(stop.id);
-    setFormData({
-      name: stop.name,
-      description: stop.description || '',
-      stops: stop.stops.length > 0 ? stop.stops : [{ stopId: '', route: '' }]
-    });
-  };
-
-  const handleUpdate = () => {
-    if (!editingId || !formData.name || formData.stops.length === 0) {
-      alert('Please fill in Name and at least one Stop ID/Route combination');
-      return;
-    }
-
-    // Validate all stop/route pairs
-    const validStops = formData.stops.filter(s => s.stopId && s.route);
-    if (validStops.length === 0) {
-      alert('Please fill in at least one valid Stop ID and Route combination');
-      return;
-    }
-
-    updatePinnedStop(editingId, {
-      name: formData.name,
-      stops: validStops,
-      description: formData.description || undefined
-    });
-
-    const updated = loadPinnedStops();
-    setPinnedStops(updated);
-    onStopsChange(updated);
-    
-    // Reset form
-    setEditingId(null);
-    setFormData({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
-  };
-
-  const handleDelete = (id: string) => {
-    if (confirm('Are you sure you want to remove this stop?')) {
-      removePinnedStop(id);
-      const updated = loadPinnedStops();
-      setPinnedStops(updated);
-      onStopsChange(updated);
-    }
-  };
-
-  const handleCancel = () => {
-    setEditingId(null);
-    setFormData({ name: '', description: '', stops: [{ stopId: '', route: '' }] });
-  };
-
-  const handleClearAll = () => {
-    if (confirm('Are you sure you want to clear all pinned stops? This will reset to default stops.')) {
-      clearPinnedStops();
-      const updated = loadPinnedStops();
-      setPinnedStops(updated);
-      onStopsChange(updated);
-    }
-  };
+  const stopName = useMemo(() => new Map(stopList.map(s => [s.id, s.name])), [stopList]);
 
   if (!isOpen) return null;
 
+  const move = (index: number, delta: number) => {
+    const next = [...journeys];
+    const [item] = next.splice(index, 1);
+    next.splice(index + delta, 0, item);
+    onChange(next);
+  };
+
+  const save = () => {
+    if (!draft) return;
+    const stops = draft.stops
+      .map(s => ({ stopId: s.stopId.trim(), route: s.route.trim().toUpperCase() }))
+      .filter(s => s.stopId && s.route);
+    if (!draft.name.trim() || stops.length === 0) return;
+    const journey: BusStop = {
+      id: draft.id ?? `journey-${Date.now()}`,
+      name: draft.name.trim(),
+      description: draft.description.trim() || undefined,
+      stops,
+    };
+    onChange(draft.id ? journeys.map(j => (j.id === draft.id ? journey : j)) : [...journeys, journey]);
+    setDraft(null);
+  };
+
+  const canSave = Boolean(draft?.name.trim() && draft.stops.some(s => s.stopId.trim() && s.route.trim()));
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="sticky top-0 bg-white border-b border-gray-200 p-6 flex items-center justify-between">
-          <h2 className="text-2xl font-bold text-gray-800">Manage Pinned Bus Stops</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-500 hover:text-gray-700 text-2xl font-bold"
-          >
-            ×
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4" role="presentation">
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-[2px]" onClick={onClose} aria-hidden />
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="manager-title"
+        className="relative flex max-h-[92dvh] w-full flex-col rounded-t-3xl bg-surface shadow-2xl outline-none sm:max-w-xl sm:rounded-3xl"
+      >
+        <div className="mx-auto mt-2 h-1.5 w-10 rounded-full bg-line sm:hidden" aria-hidden />
+        <header className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+          <h2 id="manager-title" className="text-lg font-semibold">
+            {draft ? (draft.id ? 'Edit journey' : 'New journey') : 'Your journeys'}
+          </h2>
+          <button onClick={draft ? () => setDraft(null) : onClose} className="rounded-full p-2 text-ink-3 hover:bg-surface-2 hover:text-ink" aria-label="Close">
+            <X className="size-5" />
           </button>
-        </div>
+        </header>
 
-        <div className="p-6">
-          {/* Add/Edit Form */}
-          <div className="mb-6 p-4 bg-purple-50 rounded-lg border border-purple-200">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              {editingId ? 'Edit Stop' : 'Add New Stop'}
-            </h3>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Friendly Name *
-                </label>
+        <div className="flex-1 overflow-y-auto px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+          {draft ? (
+            <div className="space-y-5">
+              <Field label="Name" hint="Emoji welcome, e.g. 🏠 Home → 🏫 School">
                 <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="e.g., 🏠 Home → 🏙️ City"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                  value={draft.name}
+                  onChange={e => setDraft({ ...draft, name: e.target.value })}
+                  placeholder="🏠 Home → 🏫 School"
+                  className="input"
+                  autoFocus
                 />
-              </div>
+              </Field>
+              <Field label="Note" hint="Optional, shown under the name">
+                <input
+                  value={draft.description}
+                  onChange={e => setDraft({ ...draft, description: e.target.value })}
+                  placeholder="Pohorska – pošta"
+                  className="input"
+                />
+              </Field>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Stop/Route Combinations *
-                </label>
-                <div className="space-y-2">
-                  {formData.stops.map((stopRoute, index) => (
-                    <div key={index} className="flex gap-2 items-start">
-                      <div className="flex-1 grid grid-cols-2 gap-2">
-                        <div>
-                          <input
-                            type="text"
-                            value={stopRoute.stopId}
-                            onChange={(e) => handleStopRouteChange(index, 'stopId', e.target.value)}
-                            placeholder="Stop ID (e.g., 255)"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          />
-                        </div>
-                        <div>
-                          <input
-                            type="text"
-                            value={stopRoute.route}
-                            onChange={(e) => handleStopRouteChange(index, 'route', e.target.value)}
-                            placeholder="Route (e.g., G6)"
-                            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                          />
-                        </div>
-                      </div>
-                      {formData.stops.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveStopRoute(index)}
-                          className="px-3 py-2 bg-red-100 hover:bg-red-200 text-red-800 rounded-lg transition-colors"
-                          title="Remove this stop/route combination"
-                        >
-                          ×
-                        </button>
-                      )}
-                    </div>
+                <p className="mb-1 text-sm font-medium">Where you board</p>
+                <p className="mb-3 text-xs text-ink-3">Add every stop + line you might take. Departures are merged, soonest first.</p>
+                <div className="space-y-3">
+                  {draft.stops.map((leg, i) => (
+                    <LegEditor
+                      key={i}
+                      leg={leg}
+                      stopList={stopList}
+                      stopName={stopName.get(leg.stopId)}
+                      canRemove={draft.stops.length > 1}
+                      onChange={next => setDraft({ ...draft, stops: draft.stops.map((s, j) => (j === i ? next : s)) })}
+                      onRemove={() => setDraft({ ...draft, stops: draft.stops.filter((_, j) => j !== i) })}
+                    />
                   ))}
                 </div>
                 <button
-                  type="button"
-                  onClick={handleAddStopRoute}
-                  className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
+                  onClick={() => setDraft({ ...draft, stops: [...draft.stops, { stopId: '', route: '' }] })}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-accent hover:bg-surface-2"
                 >
-                  + Add another stop/route combination
+                  <Plus className="size-4" /> Add another stop or line
                 </button>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description (optional)
-                </label>
-                <input
-                  type="text"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="e.g., From Home to City Center"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                />
-              </div>
-
-              <div className="flex gap-2">
-                {editingId ? (
-                  <>
-                    <button
-                      onClick={handleUpdate}
-                      className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
-                    >
-                      Update Stop
-                    </button>
-                    <button
-                      onClick={handleCancel}
-                      className="flex-1 bg-gray-300 hover:bg-gray-400 text-gray-800 font-semibold py-2 px-4 rounded-lg transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    onClick={handleAdd}
-                    className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
-                  >
-                    Add Stop
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Pinned Stops List */}
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold text-gray-800">
-                Pinned Stops ({pinnedStops.length})
-              </h3>
-              {pinnedStops.length > 0 && (
+              <div className="flex gap-2 pt-2">
+                <button onClick={() => setDraft(null)} className="flex-1 rounded-xl bg-surface-2 px-4 py-3 font-medium">
+                  Cancel
+                </button>
                 <button
-                  onClick={handleClearAll}
-                  className="text-sm text-red-600 hover:text-red-800 underline"
-                  title="Clear all pinned stops and reset to defaults"
+                  onClick={save}
+                  disabled={!canSave}
+                  className="flex-1 rounded-xl bg-accent px-4 py-3 font-semibold text-accent-ink disabled:opacity-40"
                 >
-                  Clear All
+                  Save journey
                 </button>
-              )}
-            </div>
-
-            {pinnedStops.length === 0 ? (
-              <div className="text-center py-8 text-gray-500">
-                <p>No pinned stops yet. Add one above!</p>
               </div>
-            ) : (
-              <div className="space-y-3">
-                {pinnedStops.map((stop) => (
-                  <div
-                    key={stop.id}
-                    className="p-4 bg-white border border-gray-200 rounded-lg hover:shadow-md transition-shadow"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <h4 className="font-semibold text-gray-800">{stop.name}</h4>
-                        <div className="mt-2 space-y-1">
-                          {stop.stops.map((stopRoute, idx) => (
-                            <div key={idx} className="text-sm text-gray-600">
-                              <span className="inline-block mr-4">
-                                <strong>Stop {idx + 1}:</strong> {stopRoute.stopId}
-                              </span>
-                              <span className="inline-block">
-                                <strong>Route:</strong> {stopRoute.route}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                        {stop.description && (
-                          <p className="mt-2 text-sm text-gray-500">{stop.description}</p>
-                        )}
-                      </div>
-                      <div className="flex gap-2 ml-4">
-                        <button
-                          onClick={() => handleEdit(stop)}
-                          className="px-3 py-1 bg-blue-100 hover:bg-blue-200 text-blue-800 text-sm font-medium rounded transition-colors"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(stop.id)}
-                          className="px-3 py-1 bg-red-100 hover:bg-red-200 text-red-800 text-sm font-medium rounded transition-colors"
-                        >
-                          Delete
-                        </button>
+            </div>
+          ) : (
+            <>
+              <ul className="space-y-2">
+                {journeys.map((j, i) => (
+                  <li key={j.id} className="flex items-center gap-3 rounded-2xl border border-line p-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{j.name}</p>
+                      <div className="mt-1.5 flex flex-wrap gap-1.5">
+                        {j.stops.map((s, k) => (
+                          <span key={k} className="inline-flex items-center gap-1.5 text-xs text-ink-3">
+                            <RouteBadge route={s.route} color={routeColor(s.route)} size="sm" />
+                            {stopName.get(s.stopId) ?? `Stop ${s.stopId}`}
+                          </span>
+                        ))}
                       </div>
                     </div>
-                  </div>
+                    <div className="flex shrink-0 items-center">
+                      <IconButton label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
+                        <ArrowUp className="size-4" />
+                      </IconButton>
+                      <IconButton label="Move down" disabled={i === journeys.length - 1} onClick={() => move(i, 1)}>
+                        <ArrowDown className="size-4" />
+                      </IconButton>
+                      <IconButton
+                        label="Edit"
+                        onClick={() => setDraft({ id: j.id, name: j.name, description: j.description ?? '', stops: j.stops.map(s => ({ ...s })) })}
+                      >
+                        <Pencil className="size-4" />
+                      </IconButton>
+                      <IconButton
+                        label="Delete"
+                        onClick={() => confirm(`Remove “${j.name}”?`) && onChange(journeys.filter(x => x.id !== j.id))}
+                      >
+                        <Trash2 className="size-4 text-late" />
+                      </IconButton>
+                    </div>
+                  </li>
                 ))}
+                {journeys.length === 0 && <li className="rounded-2xl bg-surface-2 p-6 text-center text-sm text-ink-3">No journeys yet.</li>}
+              </ul>
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                <button
+                  onClick={() => setDraft(emptyDraft())}
+                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 py-3 font-semibold text-accent-ink"
+                >
+                  <Plus className="size-5" /> New journey
+                </button>
+                <button
+                  onClick={() => confirm('Replace your journeys with the default set?') && onChange(DEFAULT_STOPS)}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-surface-2 px-4 py-3 text-sm font-medium text-ink-2"
+                >
+                  <RotateCcw className="size-4" /> Reset to defaults
+                </button>
               </div>
-            )}
-          </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <span className="text-sm font-medium">{label}</span>
+      {hint && <span className="ml-2 text-xs text-ink-3">{hint}</span>}
+      <div className="mt-1.5">{children}</div>
+    </label>
+  );
+}
+
+function IconButton({ label, children, ...rest }: { label: string; children: React.ReactNode } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button aria-label={label} title={label} className="rounded-lg p-2.5 text-ink-2 hover:bg-surface-2 disabled:opacity-25" {...rest}>
+      {children}
+    </button>
+  );
+}
+
+function LegEditor({
+  leg,
+  stopList,
+  stopName,
+  canRemove,
+  onChange,
+  onRemove,
+}: {
+  leg: StopRoute;
+  stopList: StopListItem[];
+  stopName?: string;
+  canRemove: boolean;
+  onChange: (leg: StopRoute) => void;
+  onRemove: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+    if (!q) return [];
+    return stopList
+      .filter(s => s.id === q || s.name.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q))
+      .slice(0, 8);
+  }, [query, stopList]);
+
+  return (
+    <div className="rounded-2xl border border-line p-3">
+      <div className="flex items-start gap-2">
+        <div className="relative min-w-0 flex-1">
+          <span className="text-xs font-medium text-ink-3">Stop</span>
+          {leg.stopId && !open ? (
+            <button onClick={() => { setOpen(true); setQuery(''); }} className="input mt-1 flex w-full items-center justify-between text-left">
+              <span className="truncate">{stopName ?? 'Stop'} <span className="text-ink-3">#{leg.stopId}</span></span>
+              <Pencil className="size-3.5 shrink-0 text-ink-3" />
+            </button>
+          ) : (
+            <div className="relative mt-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-ink-3" />
+              <input
+                value={query}
+                onChange={e => { setQuery(e.target.value); setOpen(true); }}
+                onFocus={() => setOpen(true)}
+                onBlur={() => setTimeout(() => setOpen(false), 150)}
+                placeholder="Search stop name or number"
+                className="input pl-9"
+                inputMode="search"
+              />
+              {open && matches.length > 0 && (
+                <ul className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-line bg-surface py-1 shadow-card">
+                  {matches.map(s => (
+                    <li key={s.id}>
+                      <button
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => { onChange({ ...leg, stopId: s.id }); setOpen(false); setQuery(''); }}
+                        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-surface-2"
+                      >
+                        <span className="truncate">{s.name}</span>
+                        <span className="shrink-0 text-xs text-ink-3">#{s.id}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+        {canRemove && (
+          <button onClick={onRemove} aria-label="Remove this stop" className="mt-5 rounded-lg p-2.5 text-ink-3 hover:bg-surface-2">
+            <X className="size-4" />
+          </button>
+        )}
+      </div>
+      <div className="mt-3">
+        <span className="text-xs font-medium text-ink-3">Line</span>
+        <div className="no-scrollbar -mx-1 mt-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
+          {KNOWN_ROUTES.map(r => {
+            const active = leg.route.toUpperCase() === r;
+            return (
+              <button
+                key={r}
+                onClick={() => onChange({ ...leg, route: r })}
+                aria-pressed={active}
+                className={`shrink-0 rounded-lg p-0.5 ring-2 ${active ? 'ring-ink' : 'ring-transparent opacity-60 hover:opacity-100'}`}
+              >
+                <RouteBadge route={r} color={routeColor(r)} size="md" />
+              </button>
+            );
+          })}
+          <input
+            value={KNOWN_ROUTES.includes(leg.route.toUpperCase()) ? '' : leg.route}
+            onChange={e => onChange({ ...leg, route: e.target.value.toUpperCase() })}
+            placeholder="Other"
+            aria-label="Other line"
+            className="input h-8 w-20 shrink-0 py-0 text-sm"
+          />
         </div>
       </div>
     </div>

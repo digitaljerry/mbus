@@ -1,511 +1,315 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { format } from 'date-fns';
-import { BusStop, ScheduleResponse } from './types';
+import dynamic from 'next/dynamic';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Bus, LayoutList, Map as MapIcon, RefreshCw, Settings2, WifiOff } from 'lucide-react';
+import type { BusStop, Vehicle } from './types';
 import { loadPinnedStops, savePinnedStops } from './utils/storage';
+import { DEFAULT_STOPS, splitJourneyName } from './lib/defaults';
+import { ago } from './lib/format';
+import { routeColor } from './lib/routeColors';
+import { useNow } from './hooks/useNow';
+import { legKey, useSchedules } from './hooks/useSchedules';
+import { useVehicles } from './hooks/useVehicles';
 import BusStopManager from './components/BusStopManager';
+import JourneyCard, { mergeDepartures } from './components/JourneyCard';
+import type { MapFocus, MapStop } from './components/LiveMap';
 
-// Default stops to populate on first run
-const DEFAULT_STOPS: BusStop[] = [
-  {
-    id: 'home-to-city',
-    name: '🏠 Home → 🏙️ City',
-    stops: [{ stopId: '255', route: 'G6' }],
-    description: 'From Home to City Center'
-  },
-  {
-    id: 'city-to-home',
-    name: '🏙️ City → 🏠 Home',
-    stops: [
-      { stopId: '359', route: 'G6' },
-      { stopId: '359', route: 'P18' }
-    ],
-    description: 'From City Center to Home'
-  },
-  {
-    id: 'office-to-home',
-    name: '🏢 Office → 🏠 Home',
-    stops: [
-      { stopId: '347', route: 'G6' },
-      { stopId: '347', route: 'P18' }
-    ],
-    description: 'From Office to Home'
-  },
-  {
-    id: 'school-to-city',
-    name: '🏫 School → 🏙️ City',
-    stops: [
-      { stopId: '326', route: 'G6' },
-      { stopId: '242', route: 'P18' }
-    ],
-    description: 'From School to City Center'
-  },
-  {
-    id: 'school-to-home',
-    name: '🏫 School → 🏠 Home',
-    stops: [
-      { stopId: '327', route: 'G6' },
-      { stopId: '327', route: 'P18' }
-    ],
-    description: 'From School to Home'
-  }
-];
+const LiveMap = dynamic(() => import('./components/LiveMap'), {
+  ssr: false,
+  loading: () => <div className="h-full w-full animate-pulse bg-surface-2" />,
+});
 
-// Helper function to format delay
-const formatDelay = (delaySeconds?: number): { text: string; color: string; bgColor: string } => {
-  if (delaySeconds === undefined || delaySeconds === null) {
-    return { text: '', color: '', bgColor: '' };
-  }
+const SELECTED_KEY = 'mbus-selected-journey';
+const MIGRATION_KEY = 'mbus-journeys-v2';
 
-  const delayMinutes = Math.round(delaySeconds / 60);
-  
-  if (delayMinutes <= 0) {
-    return { text: 'On time', color: 'text-green-700', bgColor: 'bg-green-100' };
-  } else if (delayMinutes <= 3) {
-    return { text: `+${delayMinutes} min`, color: 'text-yellow-700', bgColor: 'bg-yellow-100' };
-  } else {
-    return { text: `+${delayMinutes} min`, color: 'text-red-700', bgColor: 'bg-red-100' };
+// One-time: give existing users the Home → School / Home → Office shortcuts.
+function addNewDefaultJourneysOnce(stops: BusStop[]): BusStop[] {
+  try {
+    if (localStorage.getItem(MIGRATION_KEY)) return stops;
+    localStorage.setItem(MIGRATION_KEY, '1');
+  } catch {
+    return stops;
   }
-};
+  const additions = DEFAULT_STOPS.filter(d => ['home-to-school', 'home-to-office'].includes(d.id) && !stops.some(s => s.id === d.id));
+  if (!additions.length) return stops;
+  const anchor = stops.findIndex(s => s.id === 'home-to-city');
+  const next = [...stops];
+  next.splice(anchor === -1 ? next.length : anchor + 1, 0, ...additions);
+  savePinnedStops(next);
+  return next;
+}
+const ALL = 'all';
 
 export default function Home() {
-  const [pinnedStops, setPinnedStops] = useState<BusStop[]>([]);
-  // Key format: `${busStopId}-${stopId}-${route}` to store schedules for each stop/route combination
-  const [schedules, setSchedules] = useState<Record<string, ScheduleResponse | null>>({});
-  const [loading, setLoading] = useState<Record<string, boolean>>({});
-  const [failed, setFailed] = useState<Record<string, boolean>>({});
-  const [lastUpdated, setLastUpdated] = useState<Date>(new Date());
-  const [currentTime, setCurrentTime] = useState<string>('');
-  const [isClient, setIsClient] = useState<boolean>(false);
-  const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [isManagerOpen, setIsManagerOpen] = useState<boolean>(false);
-  
-  // Pull-to-refresh state
-  const [pullDistance, setPullDistance] = useState<number>(0);
-  const [isPulling, setIsPulling] = useState<boolean>(false);
-  const [startY, setStartY] = useState<number>(0);
-  const [canPull, setCanPull] = useState<boolean>(true);
+  const [journeys, setJourneys] = useState<BusStop[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [selected, setSelected] = useState<string>(ALL);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [mobileView, setMobileView] = useState<'board' | 'map'>('board');
+  const [focus, setFocus] = useState<MapFocus>();
+  const [online, setOnline] = useState(true);
+  const now = useNow(1000);
 
-  const fetchSchedule = async (busStopId: string, stopId: string, route: string) => {
-    const scheduleKey = `${busStopId}-${stopId}-${route}`;
-    setLoading(prev => ({ ...prev, [scheduleKey]: true }));
-    setFailed(prev => ({ ...prev, [scheduleKey]: false }));
-    
-    try {
-      const today = format(new Date(), 'yyyy-MM-dd');
-      const response = await fetch(`/api/schedules?stop=${stopId}&route=${route}&datum=${today}`);
-      const data = await response.json();
-      
-      setSchedules(prev => ({ ...prev, [scheduleKey]: data }));
-      setFailed(prev => ({ ...prev, [scheduleKey]: false }));
-    } catch (error) {
-      console.error(`Error fetching schedule for stop ${stopId} route ${route}:`, error);
-      setSchedules(prev => ({ ...prev, [scheduleKey]: null }));
-      setFailed(prev => ({ ...prev, [scheduleKey]: true }));
-    } finally {
-      setLoading(prev => ({ ...prev, [scheduleKey]: false }));
-    }
-  };
-
-  const fetchAllSchedules = async () => {
-    setRefreshing(true);
-    try {
-      const fetchPromises: Promise<void>[] = [];
-      pinnedStops.forEach(busStop => {
-        busStop.stops.forEach(stopRoute => {
-          fetchPromises.push(fetchSchedule(busStop.id, stopRoute.stopId, stopRoute.route));
-        });
-      });
-      await Promise.allSettled(fetchPromises);
-    } finally {
-      setLastUpdated(new Date());
-      setRefreshing(false);
-    }
-  };
-
-  const handleStopsChange = (stops: BusStop[]) => {
-    setPinnedStops(stops);
-    // Clear schedules for removed stops
-    setSchedules(prev => {
-      const validKeys = new Set<string>();
-      stops.forEach(busStop => {
-        busStop.stops.forEach(stopRoute => {
-          validKeys.add(`${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`);
-        });
-      });
-      const filtered: Record<string, ScheduleResponse | null> = {};
-      Object.keys(prev).forEach(key => {
-        if (validKeys.has(key)) {
-          filtered[key] = prev[key];
-        }
-      });
-      return filtered;
-    });
-    // Fetch schedules for new stops
-    setTimeout(() => {
-      fetchAllSchedules();
-    }, 100);
-  };
-
-  // Helper function to merge and sort schedules from all stop/route combinations for a bus stop
-  const getMergedSchedules = (busStop: BusStop) => {
-    const allSchedules: Array<{ schedule: ScheduleResponse['schedules'][0]; route: string; stopId: string }> = [];
-    
-    busStop.stops.forEach(stopRoute => {
-      const scheduleKey = `${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`;
-      const scheduleResponse = schedules[scheduleKey];
-      if (scheduleResponse?.schedules) {
-        scheduleResponse.schedules.forEach(schedule => {
-          allSchedules.push({
-            schedule,
-            route: stopRoute.route,
-            stopId: stopRoute.stopId
-          });
-        });
-      }
-    });
-
-    // Sort by time (convert HH:MM to minutes for comparison)
-    const timeToMinutes = (time: string): number => {
-      const [hours, minutes] = time.split(':').map(Number);
-      return hours * 60 + minutes;
-    };
-
-    allSchedules.sort((a, b) => {
-      const timeA = timeToMinutes(a.schedule.time);
-      const timeB = timeToMinutes(b.schedule.time);
-      return timeA - timeB;
-    });
-
-    // Take top 3 schedules
-    return allSchedules.slice(0, 3);
-  };
-
-  // Helper to check if any schedule is loading for a bus stop
-  const isBusStopLoading = (busStop: BusStop): boolean => {
-    return busStop.stops.some(stopRoute => {
-      const scheduleKey = `${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`;
-      return loading[scheduleKey] === true;
-    });
-  };
-
-  // Helper to check if any schedule failed for a bus stop
-  const hasBusStopFailed = (busStop: BusStop): boolean => {
-    return busStop.stops.some(stopRoute => {
-      const scheduleKey = `${busStop.id}-${stopRoute.stopId}-${stopRoute.route}`;
-      return failed[scheduleKey] === true;
-    });
-  };
-
+  // Load journeys + selection (URL ?j= wins, so home-screen shortcuts work).
   useEffect(() => {
-    // Set client flag to true after component mounts
-    setIsClient(true);
-    setCurrentTime(format(new Date(), 'HH:mm:ss'));
-    
-    // Load pinned stops from localStorage
     let stops = loadPinnedStops();
-    
-    // If no stops found, initialize with default stops
     if (stops.length === 0) {
-      savePinnedStops(DEFAULT_STOPS);
       stops = DEFAULT_STOPS;
+      savePinnedStops(stops);
+    } else {
+      stops = addNewDefaultJourneysOnce(stops);
     }
-    
-    setPinnedStops(stops);
-    
-    // Update clock every second
-    const timer = setInterval(() => {
-      setCurrentTime(format(new Date(), 'HH:mm:ss'));
-    }, 1000);
+    setJourneys(stops);
+    const fromUrl = new URLSearchParams(window.location.search).get('j');
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(SELECTED_KEY);
+    } catch {}
+    const want = fromUrl ?? stored ?? ALL;
+    setSelected(want === ALL || stops.some(s => s.id === want) ? want : ALL);
+    setLoaded(true);
 
-    return () => clearInterval(timer);
+    const updateOnline = () => setOnline(navigator.onLine);
+    updateOnline();
+    window.addEventListener('online', updateOnline);
+    window.addEventListener('offline', updateOnline);
+    return () => {
+      window.removeEventListener('online', updateOnline);
+      window.removeEventListener('offline', updateOnline);
+    };
   }, []);
 
-  useEffect(() => {
-    // Fetch schedules whenever pinned stops change (on initial load)
-    if (pinnedStops.length > 0 && Object.keys(schedules).length === 0) {
-      fetchAllSchedules();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pinnedStops.length]);
+  const select = useCallback((id: string) => {
+    setSelected(id);
+    try {
+      localStorage.setItem(SELECTED_KEY, id);
+    } catch {}
+    const url = new URL(window.location.href);
+    if (id === ALL) url.searchParams.delete('j');
+    else url.searchParams.set('j', id);
+    window.history.replaceState(null, '', url);
+  }, []);
 
-  // Pull-to-refresh handlers
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (window.scrollY === 0 && canPull && !refreshing) {
-      setStartY(e.touches[0].clientY);
-      setIsPulling(true);
-    }
-  };
+  const updateJourneys = useCallback(
+    (next: BusStop[]) => {
+      setJourneys(next);
+      savePinnedStops(next);
+      if (selected !== ALL && !next.some(j => j.id === selected)) select(ALL);
+    },
+    [selected, select]
+  );
 
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isPulling || refreshing) return;
+  const visible = useMemo(
+    () => (selected === ALL ? journeys : journeys.filter(j => j.id === selected)),
+    [journeys, selected]
+  );
 
-    const currentY = e.touches[0].clientY;
-    const deltaY = currentY - startY;
+  const { data, errors, lastUpdated, refreshing, refresh } = useSchedules(journeys);
 
-    if (deltaY > 0 && window.scrollY === 0) {
-      // Limit pull distance and add resistance
-      const distance = Math.min(deltaY * 0.5, 100);
-      setPullDistance(distance);
-      
-      // Prevent default scrolling when pulling
-      if (distance > 10) {
-        e.preventDefault();
-      }
-    } else {
-      setPullDistance(0);
-      setIsPulling(false);
-    }
-  };
+  const visibleRoutes = useMemo(() => [...new Set(visible.flatMap(j => j.stops.map(s => s.route.toUpperCase())))], [visible]);
+  const { vehicles } = useVehicles(visibleRoutes, loaded);
 
-  const handleTouchEnd = async () => {
-    if (pullDistance > 60 && !refreshing) {
-      // Trigger refresh if pulled far enough
-      setCanPull(false);
-      setRefreshing(true);
-      try {
-        await fetchAllSchedules();
-      } finally {
-        setPullDistance(0);
-        setIsPulling(false);
-        setCanPull(true);
-        setTimeout(() => setRefreshing(false), 300);
-      }
-    } else {
-      // Reset if not pulled far enough
-      setPullDistance(0);
-      setIsPulling(false);
-    }
-  };
+  const vehiclesByTrip = useMemo(() => {
+    const m = new Map<string, Vehicle>();
+    vehicles.forEach(v => v.tripId && m.set(v.tripId, v));
+    return m;
+  }, [vehicles]);
 
+  const mapStops = useMemo<MapStop[]>(() => {
+    const m = new Map<string, MapStop>();
+    visible.forEach(j =>
+      j.stops.forEach(s => {
+        const resp = data[legKey(s.stopId, s.route)];
+        if (resp?.lat && resp.lon && !m.has(s.stopId)) {
+          m.set(s.stopId, { id: s.stopId, name: resp.stopName ?? `Stop ${s.stopId}`, lat: resp.lat, lon: resp.lon, color: resp.routeColor ?? routeColor(s.route) });
+        }
+      })
+    );
+    return [...m.values()];
+  }, [visible, data]);
 
+  const showOnMap = useCallback((target: { vehicle?: Vehicle; stopId?: string }) => {
+    setFocus({ vehicleId: target.vehicle?.id, stopId: target.stopId, nonce: Date.now() });
+    setMobileView('map');
+  }, []);
+
+  const hasErrors = Object.keys(errors).length > 0;
 
   return (
-    <div 
-      className="min-h-screen bg-gradient-to-br from-amber-50 via-purple-50 to-purple-100"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      style={{
-        transform: `translateY(${pullDistance}px)`,
-        transition: isPulling ? 'none' : 'transform 0.3s ease-out'
-      }}
-    >
-      {/* Pull-to-refresh indicator */}
-      <div 
-        className="fixed top-0 left-0 right-0 flex items-center justify-center z-40 transition-opacity duration-200"
-        style={{
-          height: `${Math.min(pullDistance, 80)}px`,
-          opacity: pullDistance > 10 ? 1 : 0,
-          pointerEvents: 'none'
-        }}
-      >
-        <div className="flex flex-col items-center gap-2">
-          {pullDistance > 60 ? (
-            <>
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600"></div>
-              <span className="text-sm text-purple-600 font-medium">Release to refresh</span>
-            </>
-          ) : (
-            <>
-              <div 
-                className="rounded-full h-6 w-6 border-2 border-purple-600"
-                style={{
-                  transform: `rotate(${pullDistance * 3}deg)`,
-                  borderTopColor: 'transparent'
-                }}
-              ></div>
-              <span className="text-sm text-purple-600 font-medium">Pull to refresh</span>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="container mx-auto px-4 py-8">
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-800 mb-2">
-            🚌 MBus 🚌
-          </h1>
-          <p className="text-gray-600">
-            Your simplified Maribor bus schedule
-          </p>
-          <p className="text-sm text-gray-500 mt-2">
-            Current time: {isClient ? currentTime : '--:--:--'} • Last updated: {format(lastUpdated, 'HH:mm')}
-          </p>
-        </div>
-
-        {pinnedStops.length === 0 ? (
-          <div className="text-center py-16 bg-white rounded-xl shadow-lg max-w-2xl mx-auto">
-            <p className="text-xl text-gray-600 mb-4">No pinned stops yet!</p>
-            <p className="text-gray-500 mb-6">Add your favorite bus stops to get started.</p>
-            <button
-              onClick={() => setIsManagerOpen(true)}
-              className="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200"
-            >
-              📌 Add Your First Stop
-            </button>
-          </div>
-        ) : (
-          <div className="grid gap-6 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 max-w-7xl mx-auto">
-            {pinnedStops.map((busStop) => (
-            <div
-              key={busStop.id}
-              className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-purple-400"
-            >
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-gray-800">
-                  {busStop.name}
-                </h2>
-                <div className="flex flex-wrap gap-1">
-                  {busStop.stops.map((stopRoute, idx) => (
-                    <span key={idx} className="text-sm bg-purple-100 text-purple-800 px-2 py-1 rounded-full">
-                      {stopRoute.route}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              
-              <p className="text-gray-600 text-sm mb-4">
-                {busStop.description || ''}
-              </p>
-
-              {isBusStopLoading(busStop) ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-500"></div>
-                  <span className="ml-2 text-gray-600">Loading...</span>
-                </div>
-              ) : hasBusStopFailed(busStop) ? (
-                <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
-                  <p className="text-red-800 text-sm">
-                    ❌ Failed to load some schedules
-                  </p>
-                  <button
-                    onClick={() => fetchAllSchedules()}
-                    className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
-                  >
-                    Try again
-                  </button>
-                </div>
-              ) : (() => {
-                const mergedSchedules = getMergedSchedules(busStop);
-                return mergedSchedules.length > 0 ? (
-                  <div className="space-y-3">
-                    <h3 className="font-medium text-gray-700 flex items-center gap-2">
-                      🕐 Next departures:
-                    </h3>
-                    
-                    {mergedSchedules.map((item, index) => (
-                      <div
-                        key={`${item.route}-${item.stopId}-${index}`}
-                        className={`p-3 rounded-lg ${
-                          index === 0
-                            ? 'bg-amber-100 border border-amber-200'
-                            : index === 1
-                            ? 'bg-purple-100 border border-purple-200'
-                            : 'bg-slate-100 border border-slate-200'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <span className={`text-2xl font-bold ${
-                              index === 0 ? 'text-amber-900' : 
-                              index === 1 ? 'text-purple-900' : 
-                              'text-slate-800'
-                            }`}>
-                              {item.schedule.time}
-                            </span>
-                            <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded-full">
-                              {item.route}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {item.schedule.realtime && item.schedule.delay !== undefined && (() => {
-                              const delayInfo = formatDelay(item.schedule.delay);
-                              return delayInfo.text ? (
-                                <span className={`text-xs ${delayInfo.color} ${delayInfo.bgColor} px-2 py-1 rounded-full font-medium`}>
-                                  {delayInfo.text}
-                                </span>
-                              ) : null;
-                            })()}
-                            {index === 0 && (
-                              <span className="text-xs bg-amber-500 text-purple-900 px-2 py-1 rounded-full">
-                                NEXT
-                              </span>
-                            )}
-                            {index === 1 && (
-                              <span className="text-xs bg-purple-500 text-white px-2 py-1 rounded-full">
-                                SOON
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        {item.schedule.destination && (
-                          <p className="text-sm text-gray-600 mt-1">
-                            → {item.schedule.destination}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <p className="text-yellow-800 text-sm">
-                      😴 No more buses today or couldn&apos;t fetch schedule
-                    </p>
-                  </div>
-                );
-              })()}
+    <div className="flex min-h-dvh flex-col">
+      {/* Header */}
+      <header className="sticky top-0 z-30 border-b border-line bg-bg/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
+        <div className="mx-auto flex max-w-[90rem] items-center gap-3 px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-2.5">
+            <span className="flex size-9 items-center justify-center rounded-xl bg-accent text-accent-ink shadow-sm">
+              <Bus className="size-5" aria-hidden />
+            </span>
+            <div className="leading-tight">
+              <h1 className="text-lg font-bold tracking-tight">MBus</h1>
+              <p className="hidden text-xs text-ink-3 sm:block">Maribor departures</p>
             </div>
-          ))}
           </div>
-        )}
 
-        {pinnedStops.length > 0 && (
-          <div className="flex justify-center mt-8 mb-8">
+          <div className="ml-auto flex items-center gap-1.5">
             <button
-              onClick={fetchAllSchedules}
-              disabled={refreshing}
-              className="bg-purple-600 hover:bg-purple-700 disabled:hover:bg-purple-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
+              onClick={refresh}
+              className="inline-flex items-center gap-2 rounded-full px-3 py-2 text-xs font-medium text-ink-2 hover:bg-surface-2"
+              aria-label="Refresh now"
+              title="Auto-refreshes every 30 seconds"
             >
-              {refreshing ? '⏳ Refreshing…' : '🔄 Refresh Schedules'}
+              {online ? (
+                <RefreshCw className={`size-4 ${refreshing ? 'animate-spin' : ''}`} aria-hidden />
+              ) : (
+                <WifiOff className="size-4 text-late" aria-hidden />
+              )}
+              <span className="whitespace-nowrap tabular">{online ? (lastUpdated ? `Updated ${ago(lastUpdated, now)}` : 'Loading…') : 'Offline'}</span>
+            </button>
+            <button
+              onClick={() => setManagerOpen(true)}
+              className="rounded-full p-2.5 text-ink-2 hover:bg-surface-2 hover:text-ink"
+              aria-label="Manage journeys"
+            >
+              <Settings2 className="size-5" />
             </button>
           </div>
-        )}
-
-        {/* Manage Pinned Stops */}
-        <div className="flex justify-center mt-4 mb-8">
-          <button
-            onClick={() => setIsManagerOpen(true)}
-            className="bg-purple-600 hover:bg-purple-700 disabled:hover:bg-purple-600 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-lg shadow-lg transition-colors duration-200 flex items-center gap-2"
-          >
-            📌 Manage Pinned Stops
-          </button>
         </div>
 
-        <BusStopManager
-          isOpen={isManagerOpen}
-          onClose={() => setIsManagerOpen(false)}
-          onStopsChange={handleStopsChange}
-        />
+        {/* Journey shortcuts */}
+        <nav aria-label="Journeys" className="mx-auto max-w-[90rem]">
+          <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 pb-3 sm:px-6">
+            {loaded &&
+              [{ id: ALL, name: 'All journeys' }, ...journeys].map(j => {
+                const active = selected === j.id;
+                const { from, to } = splitJourneyName(j.name);
+                return (
+                  <button
+                    key={j.id}
+                    onClick={() => select(j.id)}
+                    aria-pressed={active}
+                    className={`shrink-0 rounded-full px-3.5 py-2 text-sm font-medium transition-colors ${
+                      active ? 'bg-ink text-bg' : 'bg-surface text-ink-2 ring-1 ring-line hover:text-ink'
+                    }`}
+                  >
+                    {from}
+                    {to && <span className="opacity-60"> → </span>}
+                    {to}
+                  </button>
+                );
+              })}
+          </div>
+        </nav>
+      </header>
 
-        <div className="text-center mt-12 text-gray-500 text-sm">
-          <p>
-            🚌 Built with ❤️ for simpler public transport in Maribor
-          </p>
-          <p className="mt-1">
-            Data from{' '}
-            <a
-              href="https://api.beta.brezavta.si/docs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-purple-700 hover:text-purple-900 underline"
+      {/* Body */}
+      <main className="mx-auto w-full max-w-[90rem] flex-1 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(380px,42%)] lg:gap-6 lg:px-6">
+        <section
+          className={`px-4 py-4 sm:px-6 lg:px-0 lg:py-6 ${mobileView === 'map' ? 'hidden lg:block' : ''}`}
+          aria-label="Departures"
+        >
+          {!online && (
+            <p className="mb-4 rounded-xl bg-surface-2 px-4 py-3 text-sm text-ink-2">
+              You&apos;re offline. Times below are from the last update and keep counting down.
+            </p>
+          )}
+          {!loaded ? (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+              {[0, 1, 2, 3].map(i => (
+                <div key={i} className="h-56 animate-pulse rounded-2xl bg-surface" />
+              ))}
+            </div>
+          ) : journeys.length === 0 ? (
+            <div className="rounded-2xl border border-line bg-surface p-10 text-center shadow-card">
+              <p className="text-lg font-semibold">No journeys yet</p>
+              <p className="mt-1 text-sm text-ink-3">Add the stops you use and MBus will count down to your next bus.</p>
+              <button onClick={() => setManagerOpen(true)} className="mt-5 rounded-xl bg-accent px-5 py-3 font-semibold text-accent-ink">
+                Add a journey
+              </button>
+            </div>
+          ) : (
+            <div className={`grid gap-4 ${selected === ALL ? 'sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2' : ''}`}>
+              {visible.map(j => {
+                const keys = j.stops.map(s => legKey(s.stopId, s.route));
+                return (
+                  <JourneyCard
+                    key={j.id}
+                    journey={j}
+                    departures={mergeDepartures(j, data, now)}
+                    now={now}
+                    loading={keys.some(k => !data[k]) && !keys.every(k => errors[k])}
+                    failed={keys.every(k => errors[k])}
+                    vehiclesByTrip={vehiclesByTrip}
+                    onRetry={refresh}
+                    onShowOnMap={showOnMap}
+                    compact={selected === ALL}
+                  />
+                );
+              })}
+            </div>
+          )}
+          {hasErrors && loaded && journeys.length > 0 && (
+            <p className="mt-4 text-center text-xs text-ink-3">Some lines couldn&apos;t be refreshed. Retrying automatically.</p>
+          )}
+
+          <footer className="mt-10 space-y-1 pb-24 text-center text-xs text-ink-3 lg:pb-6">
+            <p>
+              Live data from{' '}
+              <a className="underline hover:text-ink" href="https://brezavta.si" target="_blank" rel="noopener noreferrer">
+                brezavta.si
+              </a>
+              , timetables from{' '}
+              <a className="underline hover:text-ink" href="https://vozniredi.marprom.si" target="_blank" rel="noopener noreferrer">
+                Marprom
+              </a>
+              . Map © OpenStreetMap contributors, OpenFreeMap.
+            </p>
+            <p>Unofficial. Auto-refreshes every 30 s while open.</p>
+          </footer>
+        </section>
+
+        <section
+          aria-label="Live map"
+          className={`${mobileView === 'map' ? 'block' : 'hidden'} lg:block lg:py-6`}
+        >
+          <div className="h-[calc(100dvh-8.5rem-env(safe-area-inset-top))] lg:sticky lg:top-[8.5rem] lg:h-[calc(100dvh-10rem)] lg:overflow-hidden lg:rounded-2xl lg:border lg:border-line lg:shadow-card">
+            {loaded && (
+              <LiveMap
+                stops={mapStops}
+                vehicles={vehicles}
+                focus={focus}
+                visibleKey={mobileView}
+                className="h-full w-full"
+              />
+            )}
+          </div>
+        </section>
+      </main>
+
+      {/* Mobile board/map switch */}
+      <div className="fixed inset-x-0 bottom-0 z-30 flex justify-center pb-[max(1rem,env(safe-area-inset-bottom))] lg:hidden">
+        <div className="flex rounded-full bg-surface p-1 shadow-card ring-1 ring-line" role="tablist" aria-label="View">
+          {(
+            [
+              ['board', 'Departures', LayoutList],
+              ['map', 'Live map', MapIcon],
+            ] as const
+          ).map(([id, label, Icon]) => (
+            <button
+              key={id}
+              role="tab"
+              aria-selected={mobileView === id}
+              onClick={() => setMobileView(id)}
+              className={`inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold transition-colors ${
+                mobileView === id ? 'bg-ink text-bg' : 'text-ink-2'
+              }`}
             >
-              Brezavta API
-            </a>
-          </p>
+              <Icon className="size-4" aria-hidden /> {label}
+            </button>
+          ))}
         </div>
       </div>
+
+      <BusStopManager isOpen={managerOpen} journeys={journeys} onClose={() => setManagerOpen(false)} onChange={updateJourneys} />
     </div>
   );
 }

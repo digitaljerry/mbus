@@ -37,6 +37,19 @@ function migrateBusStop(stop: OldBusStop | BusStop): BusStop {
   };
 }
 
+// Stop 327 (Streliška, towards Pohorje) is not served by P18; the P18 stop
+// for the same direction is 243 (OŠ Ludvika Pliberška). Earlier defaults
+// shipped 327/P18, which never returned departures.
+function fixKnownBadStops(stop: BusStop): BusStop {
+  if (!stop.stops.some(s => s.stopId === '327' && s.route.toUpperCase() === 'P18')) return stop;
+  return {
+    ...stop,
+    stops: stop.stops.map(s =>
+      s.stopId === '327' && s.route.toUpperCase() === 'P18' ? { ...s, stopId: '243' } : s
+    ),
+  };
+}
+
 export function loadPinnedStops(): BusStop[] {
   if (typeof window === 'undefined') {
     return [];
@@ -49,7 +62,7 @@ export function loadPinnedStops(): BusStop[] {
     }
     const parsed = JSON.parse(stored) as (OldBusStop | BusStop)[];
     // Migrate old format to new format
-    return parsed.map(migrateBusStop);
+    return parsed.map(migrateBusStop).map(fixKnownBadStops);
   } catch (error) {
     console.error('Error loading pinned stops from localStorage:', error);
     return [];
