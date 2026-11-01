@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getRouteDepartures } from '../../lib/departures';
+import { getRouteDepartures, MAX_DEPARTURES, MAX_LIMIT } from '../../lib/departures';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const stop = searchParams.get('stop')?.trim();
   const route = searchParams.get('route')?.trim().toUpperCase();
   const to = searchParams.get('to')?.trim() || undefined;
+  const limit = Math.min(MAX_LIMIT, Math.max(1, Number(searchParams.get('limit')) || MAX_DEPARTURES));
 
   if (!stop || !route || !/^\d+$/.test(stop) || !/^[A-Z0-9]+$/.test(route) || (to && !/^\d+$/.test(to))) {
     return NextResponse.json({ error: 'Missing or invalid stop, route or to parameter' }, { status: 400 });
@@ -20,6 +21,7 @@ export async function GET(request: NextRequest) {
     now: simulated ? at : Date.now(),
     timetableOnly: simulated,
     toStopId: to,
+    limit,
   });
 
   if (failed) {

@@ -24,6 +24,8 @@ const LIVE_TTL_MS = 30 * 1000; // live arrivals change quickly
 const TIMETABLE_TTL_MS = 30 * 60 * 1000; // printed timetables don't
 const STOP_TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_DEPARTURES = 5;
+export const MAX_LIMIT = 80;
+const EXACT_ARRIVALS = 8;
 // A bus that left less than this long ago is still shown (as "departing").
 const GRACE_MS = 30 * 1000;
 
@@ -288,6 +290,7 @@ export async function getRouteDepartures(
     note,
     toStop: toStopId,
     toStopName,
+    limit,
     fetchedAt: now,
   };
   return { payload, failed: !schedules.length && errors.length === (timetableOnly ? 1 : 2) };
@@ -361,9 +364,10 @@ async function addArrivals(from: string, route: string, to: string, schedules: S
   };
 
   return Promise.all(
-    schedules.map(async s => {
+    schedules.map(async (s, index) => {
       // Exact: the trip's own stop times (with real-time if available).
-      if (s.tripId) {
+      // Only for the first few, so long "show more" lists stay cheap.
+      if (s.tripId && index < EXACT_ARRIVALS) {
         try {
           const date = zonedDateString(new Date(s.epoch - (s.delay ?? 0) * 1000));
           const st = await fetchTrip(s.tripId, date);

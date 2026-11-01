@@ -46,6 +46,8 @@ export interface ScheduleResponse {
   note?: string;
   toStop?: string;
   toStopName?: string;
+  /** How many departures were asked for; fewer back means that's all (today + tomorrow). */
+  limit?: number;
   fetchedAt: number;
 }
 

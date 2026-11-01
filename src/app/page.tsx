@@ -18,7 +18,7 @@ import { useWakeLock } from './hooks/useWakeLock';
 import { useGeolocation } from './hooks/useGeolocation';
 import { usePush } from './hooks/usePush';
 import BusStopManager from './components/BusStopManager';
-import JourneyCard, { mergeDepartures, type Departure } from './components/JourneyCard';
+import JourneyCard, { baseLaterRows, mergeDepartures, SHOW_MORE_STEP, type Departure } from './components/JourneyCard';
 import DepartureSheet, { departureKey } from './components/DepartureSheet';
 import UsualSection, { usualDeparture, usualJourneyId } from './components/UsualSection';
 import UsualBusEditor from './components/UsualBusEditor';
@@ -75,6 +75,8 @@ export default function Home() {
   const [pendingUsualId, setPendingUsualId] = useState<string | null>(null);
   const [nearbyStops, setNearbyStops] = useState<NearbyStop[]>([]);
   const [keepAwake, setKeepAwake] = useState(true);
+  // "Show more": extra rows per journey (reset when you switch journeys).
+  const [extraRows, setExtraRows] = useState<Record<string, number>>({});
   const now = useNow(1000);
 
   // Load journeys + selection (URL ?j= wins, so home-screen shortcuts work).
@@ -118,6 +120,7 @@ export default function Home() {
 
   const select = useCallback((id: string) => {
     setSelected(id);
+    setExtraRows({});
     try {
       localStorage.setItem(SELECTED_KEY, id);
     } catch {}
@@ -154,7 +157,23 @@ export default function Home() {
     [usual]
   );
   const fetchJourneys = useMemo(() => [...journeys, ...usualJourneys], [journeys, usualJourneys]);
-  const { data, errors, lastUpdated, refreshing, refresh } = useSchedules(fetchJourneys);
+  // Ask the server for enough departures on each leg to fill expanded cards
+  // (any single leg could supply all of them), plus a few spare so the next
+  // "Show more" is instant.
+  const legLimits = useMemo(() => {
+    const limits: Record<string, number> = {};
+    journeys.forEach(j => {
+      const extra = extraRows[j.id];
+      if (!extra) return;
+      const need = 1 + baseLaterRows(selected === ALL) + extra + SHOW_MORE_STEP;
+      j.stops.forEach(s => {
+        const k = legKey(s.stopId, s.route, s.toStopId);
+        limits[k] = Math.min(80, Math.max(limits[k] ?? 0, need));
+      });
+    });
+    return limits;
+  }, [journeys, extraRows, selected]);
+  const { data, errors, lastUpdated, refreshing, refresh } = useSchedules(fetchJourneys, legLimits);
 
   const geo = useGeolocation(isNearby);
   const push = usePush(usual, loaded);
@@ -458,6 +477,13 @@ export default function Home() {
                         onShowOnMap={showOnMap}
                         onOpen={d => openDeparture(d, j.id)}
                         compact={selected === ALL}
+                        extra={extraRows[j.id] ?? 0}
+                        canLoadMore={j.stops.some(s => {
+                          const resp = data[legKey(s.stopId, s.route, s.toStopId)];
+                          return resp ? resp.schedules.length >= (resp.limit ?? 5) && (resp.limit ?? 5) < 80 : false;
+                        })}
+                        onShowMore={() => setExtraRows(r => ({ ...r, [j.id]: (r[j.id] ?? 0) + SHOW_MORE_STEP }))}
+                        onShowLess={() => setExtraRows(r => ({ ...r, [j.id]: 0 }))}
                       />
                     );
                   })}

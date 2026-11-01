@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Bus, ChevronRight, MapPin, Moon, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Bus, ChevronDown, ChevronRight, ChevronUp, MapPin, Moon, RefreshCw } from 'lucide-react';
 import type { BusStop, Schedule, ScheduleResponse, Vehicle } from '../types';
 import { countdown, dayLabel, delayInfo } from '../lib/format';
 import { splitJourneyName } from '../lib/defaults';
@@ -67,12 +67,40 @@ interface Props {
   onShowOnMap: (target: { vehicle?: Vehicle; stopId?: string }) => void;
   onOpen: (d: Departure) => void;
   compact?: boolean;
+  /** Extra rows revealed with "Show more". */
+  extra?: number;
+  /** The server may have more departures than we've fetched. */
+  canLoadMore?: boolean;
+  onShowMore?: () => void;
+  onShowLess?: () => void;
 }
 
-export default function JourneyCard({ journey, departures, now, loading, failed, vehiclesByTrip, onRetry, onShowOnMap, onOpen, compact }: Props) {
+export const SHOW_MORE_STEP = 5;
+export const baseLaterRows = (compact?: boolean) => (compact ? 2 : 3);
+
+export default function JourneyCard({
+  journey,
+  departures,
+  now,
+  loading,
+  failed,
+  vehiclesByTrip,
+  onRetry,
+  onShowOnMap,
+  onOpen,
+  compact,
+  extra = 0,
+  canLoadMore,
+  onShowMore,
+  onShowLess,
+}: Props) {
   const { from, to } = splitJourneyName(journey.name);
   const [next, ...rest] = departures;
-  const later = rest.slice(0, compact ? 2 : 3);
+  const shownLater = baseLaterRows(compact) + extra;
+  const later = rest.slice(0, shownLater);
+  const hasHidden = rest.length > shownLater;
+  const waitingForMore = !hasHidden && Boolean(canLoadMore) && rest.length < shownLater;
+  const exhausted = !hasHidden && !canLoadMore;
   const routes = [...new Set(journey.stops.map(s => s.route.toUpperCase()))];
   const colorFor = (route: string) => departures.find(d => d.route === route)?.color;
 
@@ -154,6 +182,38 @@ export default function JourneyCard({ journey, departures, now, loading, failed,
                   );
                 })}
               </ul>
+            )}
+            {onShowMore && (hasHidden || canLoadMore || extra > 0) && (
+              <div className="mt-2 flex items-center gap-2">
+                {!exhausted && (
+                  <button
+                    onClick={onShowMore}
+                    disabled={waitingForMore}
+                    className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-surface-2 px-4 py-2.5 text-sm font-semibold text-ink-2 hover:text-ink disabled:opacity-60"
+                  >
+                    {waitingForMore ? (
+                      <>
+                        <RefreshCw className="size-4 animate-spin" aria-hidden /> Loading more…
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="size-4" aria-hidden /> Show more
+                      </>
+                    )}
+                  </button>
+                )}
+                {exhausted && extra > 0 && (
+                  <p className="flex-1 text-center text-xs text-ink-3">That&apos;s every bus until the end of tomorrow.</p>
+                )}
+                {extra > 0 && (
+                  <button
+                    onClick={onShowLess}
+                    className="inline-flex items-center justify-center gap-1 rounded-xl px-3 py-2.5 text-sm font-medium text-ink-3 hover:text-ink"
+                  >
+                    <ChevronUp className="size-4" aria-hidden /> Less
+                  </button>
+                )}
+              </div>
             )}
           </>
         )}

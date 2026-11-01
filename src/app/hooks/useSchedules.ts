@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BusStop, ScheduleResponse } from '../types';
 import { usePolling } from './usePolling';
 
@@ -16,32 +16,45 @@ interface State {
   refreshing: boolean;
 }
 
-/** Fetches (and keeps fresh) departures for every stop/route used by the journeys. */
-export function useSchedules(journeys: BusStop[]) {
+/**
+ * Fetches (and keeps fresh) departures for every stop/route used by the
+ * journeys. `limits` (by legKey) asks for more than the default 5.
+ */
+export function useSchedules(journeys: BusStop[], limits: Record<string, number> = {}) {
   const [state, setState] = useState<State>({ data: {}, errors: {}, lastUpdated: 0, refreshing: false });
   const inFlight = useRef(false);
+  // A refresh requested while one is running runs right after it.
+  const queued = useRef(false);
+  const latestRefresh = useRef<() => Promise<void>>(async () => {});
 
   const legs = useMemo(() => {
-    const map = new Map<string, { stopId: string; route: string; toStopId?: string }>();
+    const map = new Map<string, { stopId: string; route: string; toStopId?: string; limit?: number }>();
     journeys.forEach(j => j.stops.forEach(s => {
-      if (s.stopId && s.route) map.set(legKey(s.stopId, s.route, s.toStopId), { stopId: s.stopId, route: s.route.toUpperCase(), toStopId: s.toStopId });
+      if (!s.stopId || !s.route) return;
+      const key = legKey(s.stopId, s.route, s.toStopId);
+      map.set(key, { stopId: s.stopId, route: s.route.toUpperCase(), toStopId: s.toStopId, limit: limits[key] });
     }));
     return [...map.entries()];
-  }, [journeys]);
-  const legsSignature = legs.map(([k]) => k).sort().join('|');
+  }, [journeys, limits]);
+  const legsSignature = legs.map(([k, v]) => `${k}#${v.limit ?? ''}`).sort().join('|');
 
   const refresh = useCallback(async () => {
-    if (inFlight.current || legs.length === 0) return;
+    if (legs.length === 0) return;
+    if (inFlight.current) {
+      queued.current = true;
+      return;
+    }
     inFlight.current = true;
     setState(s => ({ ...s, refreshing: true }));
     // Each leg updates the board as soon as it arrives.
     const errors: Record<string, boolean> = {};
     await Promise.all(
-      legs.map(async ([key, { stopId, route, toStopId }]) => {
+      legs.map(async ([key, { stopId, route, toStopId, limit }]) => {
         let body: ScheduleResponse | undefined;
         try {
           const to = toStopId ? `&to=${encodeURIComponent(toStopId)}` : '';
-          const res = await fetch(`/api/schedules?stop=${encodeURIComponent(stopId)}&route=${encodeURIComponent(route)}${to}`, { cache: 'no-store' });
+          const lim = limit ? `&limit=${limit}` : '';
+          const res = await fetch(`/api/schedules?stop=${encodeURIComponent(stopId)}&route=${encodeURIComponent(route)}${to}${lim}`, { cache: 'no-store' });
           const json = (await res.json()) as ScheduleResponse;
           if (res.ok && Array.isArray(json.schedules)) body = json;
         } catch {}
@@ -55,9 +68,17 @@ export function useSchedules(journeys: BusStop[]) {
     );
     setState(s => ({ ...s, errors, lastUpdated: Date.now(), refreshing: false }));
     inFlight.current = false;
+    if (queued.current) {
+      queued.current = false;
+      void latestRefresh.current();
+    }
     // legsSignature captures the legs content; legs identity alone changes every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [legsSignature]);
+
+  useEffect(() => {
+    latestRefresh.current = refresh;
+  }, [refresh]);
 
   usePolling(refresh, { intervalMs: REFRESH_INTERVAL_MS, staleAfterMs: 15 * 1000, enabled: legs.length > 0, resetKey: legsSignature });
 
