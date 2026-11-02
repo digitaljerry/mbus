@@ -14,7 +14,13 @@ export async function POST(request: NextRequest) {
       url: '/',
     });
     return NextResponse.json({ status });
-  } catch {
-    return NextResponse.json({ error: 'Push service rejected the message' }, { status: 502 });
+  } catch (err) {
+    // web-push validation / push-service errors don't contain key material.
+    const e = err as { message?: string; statusCode?: number; body?: string };
+    console.error('[push/test] failed', e.statusCode, e.message, e.body);
+    return NextResponse.json(
+      { error: 'Push failed', reason: e.message?.slice(0, 200), statusCode: e.statusCode, body: e.body?.slice(0, 200) },
+      { status: 502 }
+    );
   }
 }
