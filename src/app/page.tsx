@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Settings2, Star, Sun, WifiOff } from 'lucide-react';
+import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Settings2, Star, Sun, WifiOff, Zap } from 'lucide-react';
 import type { BusStop, Vehicle } from './types';
 import { loadPinnedStops, loadUsualBuses, savePinnedStops, saveUsualBuses } from './utils/storage';
 import { DEFAULT_STOPS, splitJourneyName } from './lib/defaults';
@@ -20,10 +20,11 @@ import { usePush } from './hooks/usePush';
 import BusStopManager from './components/BusStopManager';
 import JourneyCard, { baseLaterRows, mergeDepartures, SHOW_MORE_STEP, type Departure } from './components/JourneyCard';
 import DepartureSheet, { departureKey } from './components/DepartureSheet';
-import UsualSection, { usualDeparture, usualJourneyId } from './components/UsualSection';
+import UsualSection, { SOON_WINDOW_MS, usualDeparture, usualJourneyId } from './components/UsualSection';
 import UsualBusEditor from './components/UsualBusEditor';
 import NearbyView, { type NearbyStop } from './components/NearbyView';
 import UsualView from './components/UsualView';
+import NextUpView from './components/NextUpView';
 import type { MapFocus, MapStop } from './components/LiveMap';
 
 const LiveMap = dynamic(() => import('./components/LiveMap'), {
@@ -37,6 +38,9 @@ const KEEP_AWAKE_KEY = 'mbus-keep-awake';
 const ALL = 'all';
 const NEARBY = 'nearby';
 const USUAL = 'usual';
+const NEXT = 'next';
+// One-time: make the new Next up tab the starting view.
+const NEXT_MIGRATION_KEY = 'mbus-next-up-v1';
 
 // One-time: give existing users the Home → School / Home → Office shortcuts.
 function addNewDefaultJourneysOnce(stops: BusStop[]): BusStop[] {
@@ -67,7 +71,7 @@ export default function Home() {
   const [journeys, setJourneys] = useState<BusStop[]>([]);
   const [usual, setUsual] = useState<UsualBus[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [selected, setSelected] = useState<string>(ALL);
+  const [selected, setSelected] = useState<string>(NEXT);
   const [managerOpen, setManagerOpen] = useState(false);
   const [mobileView, setMobileView] = useState<'board' | 'map'>('board');
   const [focus, setFocus] = useState<MapFocus>();
@@ -97,13 +101,19 @@ export default function Home() {
     try {
       stored = localStorage.getItem(SELECTED_KEY);
     } catch {}
-    const want = params.get('j') ?? stored ?? ALL;
-    setSelected(want === ALL || want === NEARBY || want === USUAL || stops.some(s => s.id === want) ? want : ALL);
+    try {
+      if (!localStorage.getItem(NEXT_MIGRATION_KEY)) {
+        localStorage.setItem(NEXT_MIGRATION_KEY, '1');
+        stored = null;
+      }
+    } catch {}
+    const want = params.get('j') ?? stored ?? NEXT;
+    setSelected([ALL, NEARBY, USUAL, NEXT].includes(want) || stops.some(s => s.id === want) ? want : NEXT);
     // Opened from a reminder notification: show that bus.
     const usualId = params.get('usual');
     if (usualId) {
       setPendingUsualId(usualId);
-      setSelected(ALL);
+      setSelected(NEXT);
     }
     try {
       setKeepAwake(localStorage.getItem(KEEP_AWAKE_KEY) !== 'off');
@@ -128,7 +138,7 @@ export default function Home() {
     } catch {}
     const url = new URL(window.location.href);
     url.searchParams.delete('usual');
-    if (id === ALL) url.searchParams.delete('j');
+    if (id === NEXT) url.searchParams.delete('j');
     else url.searchParams.set('j', id);
     window.history.replaceState(null, '', url);
   }, []);
@@ -137,7 +147,7 @@ export default function Home() {
     (next: BusStop[]) => {
       setJourneys(next);
       savePinnedStops(next);
-      if (selected !== ALL && selected !== NEARBY && selected !== USUAL && !next.some(j => j.id === selected)) select(ALL);
+      if (![ALL, NEARBY, USUAL, NEXT].includes(selected) && !next.some(j => j.id === selected)) select(NEXT);
     },
     [selected, select]
   );
@@ -149,10 +159,12 @@ export default function Home() {
 
   const isNearby = selected === NEARBY;
   const isUsualView = selected === USUAL;
+  const isNext = selected === NEXT;
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Views that show usual buses (and their stops/buses on the map).
-  const showsUsual = selected === ALL || isUsualView;
+  const showsUsual = selected === ALL || isUsualView || isNext;
   const visible = useMemo(
-    () => (selected === ALL ? journeys : journeys.filter(j => j.id === selected)),
+    () => (selected === ALL || selected === NEXT ? journeys : journeys.filter(j => j.id === selected)),
     [journeys, selected]
   );
 
@@ -323,8 +335,40 @@ export default function Home() {
     });
   }, []);
 
+  const loadingJourney = (j: BusStop) => {
+    const keys = j.stops.map(s => legKey(s.stopId, s.route, s.toStopId));
+    return keys.some(k => !data[k]) && !keys.every(k => errors[k]);
+  };
+
+  const renderCard = (j: BusStop, compact: boolean) => {
+    const keys = j.stops.map(s => legKey(s.stopId, s.route, s.toStopId));
+    return (
+      <JourneyCard
+        key={j.id}
+        journey={j}
+        departures={departuresByJourney.get(j.id) ?? []}
+        now={now}
+        loading={keys.some(k => !data[k]) && !keys.every(k => errors[k])}
+        failed={keys.every(k => errors[k])}
+        vehiclesByTrip={vehiclesByTrip}
+        onRetry={refresh}
+        onShowOnMap={showOnMap}
+        onOpen={d => openDeparture(d, j.id)}
+        compact={compact}
+        extra={extraRows[j.id] ?? 0}
+        canLoadMore={j.stops.some(s => {
+          const resp = data[legKey(s.stopId, s.route, s.toStopId)];
+          return resp ? resp.schedules.length >= (resp.limit ?? 5) && (resp.limit ?? 5) < 80 : false;
+        })}
+        onShowMore={() => setExtraRows(r => ({ ...r, [j.id]: (r[j.id] ?? 0) + SHOW_MORE_STEP }))}
+        onShowLess={() => setExtraRows(r => ({ ...r, [j.id]: 0 }))}
+      />
+    );
+  };
+
   const hasErrors = Object.keys(errors).length > 0;
   const chips = [
+    { id: NEXT, label: <><Zap className="mr-1 inline size-4 -translate-y-px" aria-hidden />Next up</> },
     { id: ALL, label: <>All journeys</> },
     { id: NEARBY, label: <><LocateFixed className="mr-1 inline size-4 -translate-y-px" aria-hidden />Nearby</> },
     {
@@ -444,6 +488,38 @@ export default function Home() {
                 <div key={i} className="h-56 animate-pulse rounded-2xl bg-surface" />
               ))}
             </div>
+          ) : isNext ? (
+            journeys.length === 0 && usual.length === 0 ? (
+              <div className="rounded-2xl border border-line bg-surface p-10 text-center shadow-card">
+                <p className="text-lg font-semibold">Nothing here yet</p>
+                <p className="mt-1 text-sm text-ink-3">Add a journey and MBus will show what&apos;s next for it here.</p>
+                <button onClick={() => setManagerOpen(true)} className="mt-5 rounded-xl bg-accent px-5 py-3 font-semibold text-accent-ink">
+                  Add a journey
+                </button>
+              </div>
+            ) : (
+              <NextUpView
+                journeys={journeys}
+                departuresByJourney={departuresByJourney}
+                loadingJourney={loadingJourney}
+                usual={usual}
+                data={data}
+                now={now}
+                expanded={expanded}
+                onToggle={id =>
+                  setExpanded(prev => {
+                    const n = new Set(prev);
+                    if (n.has(id)) n.delete(id);
+                    else n.add(id);
+                    return n;
+                  })
+                }
+                renderCard={j => renderCard(j, false)}
+                onOpenUsual={(u, d) => openDeparture(d, usualJourneyId(u), u.label)}
+                onEditUsual={u => setEditingUsual({ bus: u, isNew: false })}
+                onShowUsualTab={() => select(USUAL)}
+              />
+            )
           ) : isUsualView ? (
             <UsualView
               usual={usual}
@@ -471,7 +547,11 @@ export default function Home() {
             <>
               {selected === ALL && (
                 <UsualSection
-                  usual={usual}
+                  title="Leaving soon"
+                  usual={usual.filter(u => {
+                    const d = now ? usualDeparture(u, data, now) : null;
+                    return d ? d.schedule.epoch - now <= SOON_WINDOW_MS : false;
+                  })}
                   data={data}
                   now={now}
                   onOpen={(u, d) => openDeparture(d, usualJourneyId(u), u.label)}
@@ -488,31 +568,7 @@ export default function Home() {
                 </div>
               ) : (
                 <div className={`grid gap-4 ${selected === ALL ? 'sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2' : ''}`}>
-                  {visible.map(j => {
-                    const keys = j.stops.map(s => legKey(s.stopId, s.route, s.toStopId));
-                    return (
-                      <JourneyCard
-                        key={j.id}
-                        journey={j}
-                        departures={departuresByJourney.get(j.id) ?? []}
-                        now={now}
-                        loading={keys.some(k => !data[k]) && !keys.every(k => errors[k])}
-                        failed={keys.every(k => errors[k])}
-                        vehiclesByTrip={vehiclesByTrip}
-                        onRetry={refresh}
-                        onShowOnMap={showOnMap}
-                        onOpen={d => openDeparture(d, j.id)}
-                        compact={selected === ALL}
-                        extra={extraRows[j.id] ?? 0}
-                        canLoadMore={j.stops.some(s => {
-                          const resp = data[legKey(s.stopId, s.route, s.toStopId)];
-                          return resp ? resp.schedules.length >= (resp.limit ?? 5) && (resp.limit ?? 5) < 80 : false;
-                        })}
-                        onShowMore={() => setExtraRows(r => ({ ...r, [j.id]: (r[j.id] ?? 0) + SHOW_MORE_STEP }))}
-                        onShowLess={() => setExtraRows(r => ({ ...r, [j.id]: 0 }))}
-                      />
-                    );
-                  })}
+                  {visible.map(j => renderCard(j, selected === ALL))}
                 </div>
               )}
               {selected === ALL && usual.length === 0 && journeys.length > 0 && (

@@ -12,6 +12,9 @@ import type { Departure } from './JourneyCard';
 
 export const usualJourneyId = (u: UsualBus) => `usual:${u.id}`;
 
+/** Usual buses shown outside their own tab: only when leaving within this window. */
+export const SOON_WINDOW_MS = 60 * 60_000;
+
 /** The next instance of a usual bus as a Departure, live if we have data for it. */
 export function usualDeparture(u: UsualBus, data: Record<string, ScheduleResponse>, now: number): Departure | null {
   const occ = nextOccurrences(u, now - 60_000)[0];
@@ -46,9 +49,10 @@ interface Props {
   onEdit: (u: UsualBus) => void;
   /** Show the edit (pencil) button on each row. */
   editable?: boolean;
+  title?: string;
 }
 
-export default function UsualSection({ usual, data, now, onOpen, onEdit, editable = false }: Props) {
+export default function UsualSection({ usual, data, now, onOpen, onEdit, editable = false, title = 'Your usual buses' }: Props) {
   if (!usual.length) return null;
 
   const rows = usual
@@ -58,7 +62,7 @@ export default function UsualSection({ usual, data, now, onOpen, onEdit, editabl
   return (
     <section aria-labelledby="usual-heading" className="mb-5">
       <h2 id="usual-heading" className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-ink-2">
-        <Star className="size-4 fill-current text-warn" aria-hidden /> Your usual buses
+        <Star className="size-4 fill-current text-warn" aria-hidden /> {title}
       </h2>
       <div className="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
         <ul className="divide-y divide-line">
