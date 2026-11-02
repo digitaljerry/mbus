@@ -44,9 +44,11 @@ interface Props {
   now: number;
   onOpen: (u: UsualBus, d: Departure) => void;
   onEdit: (u: UsualBus) => void;
+  /** Show the edit (pencil) button on each row. */
+  editable?: boolean;
 }
 
-export default function UsualSection({ usual, data, now, onOpen, onEdit }: Props) {
+export default function UsualSection({ usual, data, now, onOpen, onEdit, editable = false }: Props) {
   if (!usual.length) return null;
 
   const rows = usual
@@ -106,9 +108,11 @@ export default function UsualSection({ usual, data, now, onOpen, onEdit }: Props
                     </div>
                   )}
                 </button>
+                {editable && (
                 <button onClick={() => onEdit(u)} aria-label={`Edit ${u.label || u.time}`} className="px-3 text-ink-3 hover:bg-surface-2 hover:text-ink">
                   <Pencil className="size-4" />
                 </button>
+                )}
               </li>
             );
           })}

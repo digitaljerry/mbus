@@ -104,7 +104,7 @@ export default function UsualView({ usual, data, now, push, onEnablePush, onOpen
 
   return (
     <div className="space-y-4">
-      <UsualSection usual={usual} data={data} now={now} onOpen={onOpen} onEdit={onEdit} />
+      <UsualSection usual={usual} data={data} now={now} onOpen={onOpen} onEdit={onEdit} editable />
 
       <div className="rounded-2xl border border-line bg-surface p-4 shadow-card">
         <div className="flex items-start gap-3">
