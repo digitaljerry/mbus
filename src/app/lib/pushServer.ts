@@ -13,10 +13,19 @@ export function pushEnabled(): boolean {
   return Boolean(vapidPublicKey() && process.env.VAPID_PRIVATE_KEY);
 }
 
+/** Accepts a bare email too ("me@example.com" → "mailto:me@example.com"). */
+function vapidSubject(): string {
+  const raw = (process.env.VAPID_SUBJECT || '').trim();
+  if (!raw) return 'mailto:mbus@example.com';
+  if (/^(mailto:|https:\/\/)/i.test(raw)) return raw;
+  if (/^[^@\s]+@[^@\s]+$/.test(raw)) return `mailto:${raw}`;
+  return raw;
+}
+
 let configured = false;
 function configure() {
   if (configured) return;
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:mbus@example.com', vapidPublicKey()!, process.env.VAPID_PRIVATE_KEY!);
+  webpush.setVapidDetails(vapidSubject(), vapidPublicKey()!.trim(), process.env.VAPID_PRIVATE_KEY!.trim());
   configured = true;
 }
 
