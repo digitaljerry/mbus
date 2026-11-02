@@ -12,13 +12,13 @@ import { routeColor } from './lib/routeColors';
 import { isoWeekday, sameUsual, WEEKDAYS, type UsualBus } from './lib/usual';
 import { zonedDateString } from './lib/time';
 import { useNow } from './hooks/useNow';
-import { legKey, useSchedules } from './hooks/useSchedules';
+import { DEFAULT_BEFORE, legKey, useSchedules } from './hooks/useSchedules';
 import { useVehicles } from './hooks/useVehicles';
 import { useWakeLock } from './hooks/useWakeLock';
 import { useGeolocation } from './hooks/useGeolocation';
 import { usePush } from './hooks/usePush';
 import BusStopManager from './components/BusStopManager';
-import JourneyCard, { baseLaterRows, mergeDepartures, SHOW_MORE_STEP, type Departure } from './components/JourneyCard';
+import JourneyCard, { baseLaterRows, journeySequence, mergeDepartures, mergeEarlier, SHOW_MORE_STEP, type Departure } from './components/JourneyCard';
 import DepartureSheet, { departureKey } from './components/DepartureSheet';
 import UsualSection, { SOON_WINDOW_MS, usualDeparture, usualJourneyId } from './components/UsualSection';
 import UsualBusEditor from './components/UsualBusEditor';
@@ -83,6 +83,8 @@ export default function Home() {
   const [keepAwake, setKeepAwake] = useState(true);
   // "Show more": extra rows per journey (reset when you switch journeys).
   const [extraRows, setExtraRows] = useState<Record<string, number>>({});
+  // "Show earlier": how many already-due buses to reveal per journey.
+  const [earlierRows, setEarlierRows] = useState<Record<string, number>>({});
   const now = useNow(1000);
 
   // Load journeys + selection (URL ?j= wins, so home-screen shortcuts work).
@@ -133,6 +135,7 @@ export default function Home() {
   const select = useCallback((id: string) => {
     setSelected(id);
     setExtraRows({});
+    setEarlierRows({});
     try {
       localStorage.setItem(SELECTED_KEY, id);
     } catch {}
@@ -190,7 +193,19 @@ export default function Home() {
     });
     return limits;
   }, [journeys, extraRows, selected]);
-  const { data, errors, lastUpdated, refreshing, refresh } = useSchedules(fetchJourneys, legLimits);
+  const legBefores = useMemo(() => {
+    const befores: Record<string, number> = {};
+    journeys.forEach(j => {
+      const shown = earlierRows[j.id];
+      if (!shown) return;
+      j.stops.forEach(s => {
+        const k = legKey(s.stopId, s.route, s.toStopId);
+        befores[k] = Math.min(30, Math.max(befores[k] ?? DEFAULT_BEFORE, shown + SHOW_MORE_STEP));
+      });
+    });
+    return befores;
+  }, [journeys, earlierRows]);
+  const { data, errors, lastUpdated, refreshing, refresh } = useSchedules(fetchJourneys, legLimits, legBefores);
 
   const geo = useGeolocation(isNearby);
   const push = usePush(usual, loaded);
@@ -236,14 +251,16 @@ export default function Home() {
     [visible, data, now]
   );
 
-  // The tracked departure, refreshed from the latest data (delays move it).
+  // The tracked departure, refreshed from the latest data (delays move it),
+  // plus its place among the journey's buses for previous/next.
   const trackedLive = useMemo(() => {
     if (!tracked) return null;
     const j = fetchJourneys.find(x => x.id === tracked.journeyId);
-    const fresh = j ? mergeDepartures(j, data, 0).find(d => departureKey(d) === tracked.key) : undefined;
+    const sequence = j ? journeySequence(j, data, now) : [];
+    const index = sequence.findIndex(d => departureKey(d) === tracked.key);
     const title = tracked.title ?? j?.name;
-    if (fresh) return { departure: fresh, current: true, title };
-    return { departure: tracked.last, current: !j && tracked.last.schedule.epoch > now - 30_000, title };
+    if (index >= 0) return { departure: sequence[index], current: true, title, sequence, index };
+    return { departure: tracked.last, current: !j && tracked.last.schedule.epoch > now - 30_000, title, sequence, index: -1 };
   }, [tracked, fetchJourneys, data, now]);
 
   const openDeparture = useCallback((d: Departure, journeyId?: string, title?: string) => {
@@ -362,6 +379,10 @@ export default function Home() {
         })}
         onShowMore={() => setExtraRows(r => ({ ...r, [j.id]: (r[j.id] ?? 0) + SHOW_MORE_STEP }))}
         onShowLess={() => setExtraRows(r => ({ ...r, [j.id]: 0 }))}
+        past={mergeEarlier(j, data, now)}
+        earlierShown={earlierRows[j.id] ?? 0}
+        onShowEarlier={() => setEarlierRows(r => ({ ...r, [j.id]: (r[j.id] ?? 0) + SHOW_MORE_STEP }))}
+        onHideEarlier={() => setEarlierRows(r => ({ ...r, [j.id]: 0 }))}
       />
     );
   };
@@ -655,6 +676,28 @@ export default function Home() {
             setTracked(null);
             showOnMap(target);
           }}
+          nav={
+            trackedLive.index >= 0 && trackedLive.sequence.length > 1
+              ? {
+                  index: trackedLive.index,
+                  total: trackedLive.sequence.length,
+                  onPrev:
+                    trackedLive.index > 0
+                      ? () => {
+                          const d = trackedLive.sequence[trackedLive.index - 1];
+                          setTracked(t => t && { ...t, key: departureKey(d), last: d });
+                        }
+                      : undefined,
+                  onNext:
+                    trackedLive.index < trackedLive.sequence.length - 1
+                      ? () => {
+                          const d = trackedLive.sequence[trackedLive.index + 1];
+                          setTracked(t => t && { ...t, key: departureKey(d), last: d });
+                        }
+                      : undefined,
+                }
+              : undefined
+          }
           isUsual={Boolean(usualFor(trackedLive.departure))}
           onUsual={() => startUsual(trackedLive.departure)}
           onClose={() => setTracked(null)}

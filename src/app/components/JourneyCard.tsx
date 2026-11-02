@@ -18,27 +18,80 @@ export interface Departure {
   source: ScheduleResponse['source'];
 }
 
+const toDeparture = (resp: ScheduleResponse, schedule: Schedule): Departure => ({
+  schedule,
+  route: resp.route,
+  color: resp.routeColor,
+  stopId: resp.stop,
+  stopName: resp.stopName,
+  toStopId: resp.toStop,
+  toStopName: resp.toStopName,
+  source: resp.source,
+});
+
 /** Merge the departures of all stop/route legs of a journey, soonest first. */
 export function mergeDepartures(journey: BusStop, data: Record<string, ScheduleResponse>, now: number): Departure[] {
   const out: Departure[] = [];
   for (const leg of journey.stops) {
     const resp = data[legKey(leg.stopId, leg.route, leg.toStopId)];
-    resp?.schedules.forEach(schedule => {
-      out.push({
-        schedule,
-        route: resp.route,
-        color: resp.routeColor,
-        stopId: resp.stop,
-        stopName: resp.stopName,
-        toStopId: resp.toStop,
-        toStopName: resp.toStopName,
-        source: resp.source,
-      });
-    });
+    resp?.schedules.forEach(schedule => out.push(toDeparture(resp, schedule)));
   }
   return out
     .filter(d => !now || !countdown(d.schedule.epoch, now).departed)
     .sort((a, b) => a.schedule.epoch - b.schedule.epoch);
+}
+
+/** Departures that are already due (oldest first): the server's `earlier` plus any that passed since. */
+export function mergeEarlier(journey: BusStop, data: Record<string, ScheduleResponse>, now: number): Departure[] {
+  if (!now) return [];
+  const seen = new Set<string>();
+  const out: Departure[] = [];
+  for (const leg of journey.stops) {
+    const resp = data[legKey(leg.stopId, leg.route, leg.toStopId)];
+    if (!resp) continue;
+    [...(resp.earlier ?? []), ...resp.schedules.filter(s => countdown(s.epoch, now).departed)].forEach(s => {
+      const k = `${resp.stop}|${resp.route}|${s.scheduledTime ?? s.time}|${Math.round(s.epoch / 3_600_000)}`;
+      if (seen.has(k)) return;
+      seen.add(k);
+      out.push(toDeparture(resp, s));
+    });
+  }
+  return out.sort((a, b) => a.schedule.epoch - b.schedule.epoch);
+}
+
+/** Every departure we know for a journey, oldest first (for stepping through them). */
+export function journeySequence(journey: BusStop, data: Record<string, ScheduleResponse>, now: number): Departure[] {
+  return [...mergeEarlier(journey, data, now), ...mergeDepartures(journey, data, now)];
+}
+
+/** A timetable-only bus that was due a few minutes ago may simply be late. */
+export const JUST_DUE_MS = 5 * 60_000;
+
+function agoText(epoch: number, now: number) {
+  const mins = Math.max(0, Math.floor((now - epoch) / 60_000));
+  return mins < 1 ? 'just now' : `${mins} min ago`;
+}
+
+function PastRow({ d, now, onOpen, highlight }: { d: Departure; now: number; onOpen: (d: Departure) => void; highlight?: boolean }) {
+  const live = d.schedule.realtime;
+  return (
+    <li>
+      <button
+        onClick={() => onOpen(d)}
+        className={`-mx-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-lg px-2 py-2 text-left hover:bg-surface-2 ${highlight ? '' : 'opacity-60'}`}
+      >
+        <RouteBadge route={d.route} color={d.color} size="sm" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm text-ink-2">{d.schedule.destination ?? d.stopName}</p>
+          {highlight && !live && <p className="truncate text-xs text-warn">No live data, may still be coming</p>}
+        </div>
+        <div className="flex shrink-0 items-baseline gap-2 text-right tabular">
+          <span className="text-sm text-ink-3 line-through decoration-ink-3/40">{d.schedule.time}</span>
+          <span className="w-20 text-xs font-medium text-ink-3">{live ? 'left' : 'was due'} {agoText(d.schedule.epoch, now)}</span>
+        </div>
+      </button>
+    </li>
+  );
 }
 
 const toneClass = { ok: 'text-live', warn: 'text-warn', late: 'text-late' } as const;
@@ -73,6 +126,12 @@ interface Props {
   canLoadMore?: boolean;
   onShowMore?: () => void;
   onShowLess?: () => void;
+  /** Departures already due, oldest first. */
+  past?: Departure[];
+  /** How many of `past` to reveal ("Show earlier"). */
+  earlierShown?: number;
+  onShowEarlier?: () => void;
+  onHideEarlier?: () => void;
 }
 
 export const SHOW_MORE_STEP = 5;
@@ -93,6 +152,10 @@ export default function JourneyCard({
   canLoadMore,
   onShowMore,
   onShowLess,
+  past = [],
+  earlierShown = 0,
+  onShowEarlier,
+  onHideEarlier,
 }: Props) {
   const { from, to } = splitJourneyName(journey.name);
   const [next, ...rest] = departures;
@@ -103,6 +166,12 @@ export default function JourneyCard({
   const exhausted = !hasHidden && !canLoadMore;
   const routes = [...new Set(journey.stops.map(s => s.route.toUpperCase()))];
   const colorFor = (route: string) => departures.find(d => d.route === route)?.color;
+  // Always show buses that were due in the last few minutes without live data
+  // (they may be late); "Show earlier" reveals more.
+  const justDue = now ? past.filter(d => !d.schedule.realtime && now - d.schedule.epoch < JUST_DUE_MS) : [];
+  const pastCount = Math.min(past.length, Math.max(earlierShown, justDue.length));
+  const shownPast = pastCount > 0 ? past.slice(past.length - pastCount) : [];
+  const canShowEarlier = Boolean(onShowEarlier) && past.length > shownPast.length;
 
   return (
     <article className="flex flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
@@ -148,6 +217,29 @@ export default function JourneyCard({
           </div>
         ) : (
           <>
+            {(canShowEarlier || earlierShown > 0) && (
+              <div className="-mt-1 mb-1 flex items-center justify-between">
+                {canShowEarlier ? (
+                  <button onClick={onShowEarlier} className="inline-flex items-center gap-1 rounded-lg py-1 text-xs font-medium text-ink-3 hover:text-ink">
+                    <ChevronUp className="size-3.5" aria-hidden /> Show earlier
+                  </button>
+                ) : (
+                  <span />
+                )}
+                {earlierShown > 0 && (
+                  <button onClick={onHideEarlier} className="rounded-lg py-1 text-xs font-medium text-ink-3 hover:text-ink">
+                    Hide earlier
+                  </button>
+                )}
+              </div>
+            )}
+            {shownPast.length > 0 && (
+              <ul className="mb-2 divide-y divide-line">
+                {shownPast.map(d => (
+                  <PastRow key={`past-${d.stopId}-${d.route}-${d.schedule.epoch}`} d={d} now={now} onOpen={onOpen} highlight={justDue.includes(d)} />
+                ))}
+              </ul>
+            )}
             <NextDeparture d={next} now={now} vehicle={next.schedule.tripId ? vehiclesByTrip.get(next.schedule.tripId) : undefined} onShowOnMap={onShowOnMap} onOpen={onOpen} />
             {later.length > 0 && (
               <ul className="mt-2 divide-y divide-line">
@@ -197,7 +289,7 @@ export default function JourneyCard({
                       </>
                     ) : (
                       <>
-                        <ChevronDown className="size-4" aria-hidden /> Show more
+                        <ChevronDown className="size-4" aria-hidden /> Show later
                       </>
                     )}
                   </button>

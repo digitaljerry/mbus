@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect } from 'react';
-import { Bus, MapPin, Star, Sun, SunDim, X } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { Bus, ChevronLeft, ChevronRight, MapPin, Star, Sun, SunDim, X } from 'lucide-react';
 import type { Vehicle } from '../types';
 import { countdown, dayLabel, delayInfo } from '../lib/format';
 import { zonedDateString } from '../lib/time';
@@ -29,6 +29,8 @@ interface Props {
   /** Set when this departure is one of your usual buses. */
   isUsual: boolean;
   onUsual: () => void;
+  /** Step to the previous/next bus of the same journey (buttons + swipe). */
+  nav?: { index: number; total: number; onPrev?: () => void; onNext?: () => void };
   onClose: () => void;
 }
 
@@ -45,16 +47,38 @@ export default function DepartureSheet({
   onShowOnMap,
   isUsual,
   onUsual,
+  nav,
   onClose,
 }: Props) {
   const c = countdown(d.schedule.epoch, now);
   const gone = !current && d.schedule.epoch < now;
+  // Already due: a timetable-only bus may just be late; a live one has left.
+  const past = !gone && c.departed;
+  const minsAgo = Math.max(0, Math.floor((now - d.schedule.epoch) / 60_000));
+  const touch = useRef<{ x: number; y: number } | null>(null);
+  const onTouchStart = (e: React.TouchEvent) => {
+    touch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const start = touch.current;
+    touch.current = null;
+    if (!start || !nav) return;
+    const dx = e.changedTouches[0].clientX - start.x;
+    const dy = e.changedTouches[0].clientY - start.y;
+    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0) nav.onNext?.();
+    else nav.onPrev?.();
+  };
   const day = now ? dayLabel(d.schedule.epoch, now) : undefined;
   const delay = d.schedule.realtime ? delayInfo(d.schedule.delay) : null;
   const delayed = d.schedule.realtime && d.schedule.scheduledTime && d.schedule.scheduledTime !== d.schedule.time;
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      if (e.key === 'ArrowLeft') nav?.onPrev?.();
+      if (e.key === 'ArrowRight') nav?.onNext?.();
+    };
     document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -62,7 +86,7 @@ export default function DepartureSheet({
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prev;
     };
-  }, [onClose]);
+  }, [onClose, nav]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
@@ -87,16 +111,39 @@ export default function DepartureSheet({
           </button>
         </header>
 
-        <div className="px-5 py-8 text-center" aria-live="off">
-          <p className="text-sm font-medium text-ink-3">{gone ? 'This bus has left' : c.departed ? 'Departed' : 'Departs in'}</p>
-          <p
-            className={`mt-1 text-7xl font-bold leading-none tracking-tight tabular sm:text-8xl ${c.urgent && !gone ? 'text-accent' : ''} ${gone ? 'text-ink-3' : ''}`}
-            role="timer"
-            aria-label={c.label}
-          >
-            {now ? (gone ? '—' : c.value) : '—'}
+        <div className="relative px-5 py-8 text-center" aria-live="off" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+          {nav && (
+            <>
+              <button
+                onClick={nav.onPrev}
+                disabled={!nav.onPrev}
+                aria-label="Previous bus"
+                className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full p-3 text-ink-3 hover:bg-surface-2 hover:text-ink disabled:opacity-20"
+              >
+                <ChevronLeft className="size-6" />
+              </button>
+              <button
+                onClick={nav.onNext}
+                disabled={!nav.onNext}
+                aria-label="Next bus"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-3 text-ink-3 hover:bg-surface-2 hover:text-ink disabled:opacity-20"
+              >
+                <ChevronRight className="size-6" />
+              </button>
+            </>
+          )}
+          <p className="text-sm font-medium text-ink-3">
+            {gone ? 'This bus has left' : past ? (d.schedule.realtime ? 'Left' : 'Was due') : 'Departs in'}
           </p>
-          {c.unit && !gone && <p className="mt-1 text-lg font-medium text-ink-3">{c.unit}</p>}
+          <p
+            className={`mt-1 text-7xl font-bold leading-none tracking-tight tabular sm:text-8xl ${c.urgent && !gone && !past ? 'text-accent' : ''} ${gone || past ? 'text-ink-3' : ''}`}
+            role="timer"
+            aria-label={past ? `${minsAgo} minutes ago` : c.label}
+          >
+            {!now || gone ? '—' : past ? (minsAgo < 1 ? 'Now' : minsAgo) : c.value}
+          </p>
+          {past && minsAgo >= 1 && <p className="mt-1 text-lg font-medium text-ink-3">min ago</p>}
+          {!past && c.unit && !gone && <p className="mt-1 text-lg font-medium text-ink-3">{c.unit}</p>}
           <p className="mt-4 text-sm text-ink-2 tabular">
             {day && <span className="font-medium">{day} · </span>}
             {d.schedule.time}
@@ -110,10 +157,15 @@ export default function DepartureSheet({
                 <span className="font-medium text-live">{delay?.text ?? 'Live'}</span>
                 <span className="text-ink-3">· real-time estimate</span>
               </>
+            ) : past ? (
+              <span className="text-warn">No live data. If it hasn&apos;t come yet, it&apos;s running late.</span>
             ) : (
               <span className="text-ink-3">Timetable time{d.source === 'marprom' ? ' (Marprom)' : ''}, no live data</span>
             )}
           </p>
+          {nav && nav.total > 1 && (
+            <p className="mt-3 text-[0.7rem] text-ink-3 sm:hidden">Swipe for the previous or next bus</p>
+          )}
         </div>
 
         <div className="flex flex-col gap-2 px-5">

@@ -18,9 +18,12 @@ interface State {
 
 /**
  * Fetches (and keeps fresh) departures for every stop/route used by the
- * journeys. `limits` (by legKey) asks for more than the default 5.
+ * journeys. `limits` (by legKey) asks for more than the default 5 upcoming,
+ * `befores` for more than the default 3 departures that are already due.
  */
-export function useSchedules(journeys: BusStop[], limits: Record<string, number> = {}) {
+export const DEFAULT_BEFORE = 3;
+
+export function useSchedules(journeys: BusStop[], limits: Record<string, number> = {}, befores: Record<string, number> = {}) {
   const [state, setState] = useState<State>({ data: {}, errors: {}, lastUpdated: 0, refreshing: false });
   const inFlight = useRef(false);
   // A refresh requested while one is running runs right after it.
@@ -28,15 +31,15 @@ export function useSchedules(journeys: BusStop[], limits: Record<string, number>
   const latestRefresh = useRef<() => Promise<void>>(async () => {});
 
   const legs = useMemo(() => {
-    const map = new Map<string, { stopId: string; route: string; toStopId?: string; limit?: number }>();
+    const map = new Map<string, { stopId: string; route: string; toStopId?: string; limit?: number; before: number }>();
     journeys.forEach(j => j.stops.forEach(s => {
       if (!s.stopId || !s.route) return;
       const key = legKey(s.stopId, s.route, s.toStopId);
-      map.set(key, { stopId: s.stopId, route: s.route.toUpperCase(), toStopId: s.toStopId, limit: limits[key] });
+      map.set(key, { stopId: s.stopId, route: s.route.toUpperCase(), toStopId: s.toStopId, limit: limits[key], before: befores[key] ?? DEFAULT_BEFORE });
     }));
     return [...map.entries()];
-  }, [journeys, limits]);
-  const legsSignature = legs.map(([k, v]) => `${k}#${v.limit ?? ''}`).sort().join('|');
+  }, [journeys, limits, befores]);
+  const legsSignature = legs.map(([k, v]) => `${k}#${v.limit ?? ''}#${v.before}`).sort().join('|');
 
   const refresh = useCallback(async () => {
     if (legs.length === 0) return;
@@ -49,11 +52,11 @@ export function useSchedules(journeys: BusStop[], limits: Record<string, number>
     // Each leg updates the board as soon as it arrives.
     const errors: Record<string, boolean> = {};
     await Promise.all(
-      legs.map(async ([key, { stopId, route, toStopId, limit }]) => {
+      legs.map(async ([key, { stopId, route, toStopId, limit, before }]) => {
         let body: ScheduleResponse | undefined;
         try {
           const to = toStopId ? `&to=${encodeURIComponent(toStopId)}` : '';
-          const lim = limit ? `&limit=${limit}` : '';
+          const lim = `${limit ? `&limit=${limit}` : ''}&before=${before}`;
           const res = await fetch(`/api/schedules?stop=${encodeURIComponent(stopId)}&route=${encodeURIComponent(route)}${to}${lim}`, { cache: 'no-store' });
           const json = (await res.json()) as ScheduleResponse;
           if (res.ok && Array.isArray(json.schedules)) body = json;

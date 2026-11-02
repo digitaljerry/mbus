@@ -48,6 +48,8 @@ export interface ScheduleResponse {
   toStopName?: string;
   /** How many departures were asked for; fewer back means that's all (today + tomorrow). */
   limit?: number;
+  /** Departures already due (oldest first), when asked for with `before`. */
+  earlier?: Schedule[];
   fetchedAt: number;
 }
 

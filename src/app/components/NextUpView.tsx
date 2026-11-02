@@ -9,7 +9,7 @@ import { formatClock } from '../lib/time';
 import { splitJourneyName } from '../lib/defaults';
 import RouteBadge from './RouteBadge';
 import UsualSection, { SOON_WINDOW_MS, usualDeparture } from './UsualSection';
-import type { Departure } from './JourneyCard';
+import { JUST_DUE_MS, mergeEarlier, type Departure } from './JourneyCard';
 
 interface Props {
   journeys: BusStop[];
@@ -96,6 +96,7 @@ export default function NextUpView({
               <GlanceRow
                 key={j.id}
                 journey={j}
+                justDue={now ? mergeEarlier(j, data, now).filter(d => !d.schedule.realtime && now - d.schedule.epoch < JUST_DUE_MS).at(-1) : undefined}
                 departures={departuresByJourney.get(j.id) ?? []}
                 loading={loadingJourney(j)}
                 now={now}
@@ -111,12 +112,14 @@ export default function NextUpView({
 
 function GlanceRow({
   journey,
+  justDue,
   departures,
   loading,
   now,
   onToggle,
 }: {
   journey: BusStop;
+  justDue?: Departure;
   departures: Departure[];
   loading: boolean;
   now: number;
@@ -154,6 +157,11 @@ function GlanceRow({
                 {next.schedule.arrivalTime && <> · arrives {next.schedule.arrivalTime}</>}
               </span>
             </p>
+            {justDue && (
+              <p className="mt-0.5 truncate text-xs text-warn tabular">
+                {justDue.route} {justDue.schedule.time} was due {Math.max(0, Math.floor((now - justDue.schedule.epoch) / 60_000))} min ago, may still be coming
+              </p>
+            )}
             {then && (
               <p className="mt-0.5 truncate text-xs text-ink-3 tabular">
                 then {then.route !== next.route ? `${then.route} ` : ''}

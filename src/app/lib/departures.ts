@@ -2,6 +2,9 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import type { Schedule, ScheduleResponse } from '../types';
 import { routeColor } from './routeColors';
+// Bundled copy of Marprom's stop list (id, name, position), used when
+// brezavta is unreachable.
+import FALLBACK_STOPS from './marprom-stops.json';
 import {
   addDays,
   formatClock,
@@ -76,6 +79,22 @@ function cached<T>(key: string, ttl: number, load: () => Promise<T>): Promise<T>
   return value;
 }
 
+// When brezavta fails, skip it for a minute instead of waiting for timeouts
+// on every request.
+let brezavtaDownUntil = 0;
+const BREZAVTA_TIMEOUT_MS = 5000;
+async function brezavta<T>(path: string, timeout = BREZAVTA_TIMEOUT_MS): Promise<T> {
+  if (Date.now() < brezavtaDownUntil) throw new Error('brezavta unavailable (cooling down)');
+  try {
+    const { data } = await http.get<T>(`${API_BASE_URL}${path}`, { timeout, headers: { Accept: 'application/json' } });
+    return data;
+  } catch (err) {
+    const status = (err as { response?: { status?: number } }).response?.status;
+    if (!status || status >= 500) brezavtaDownUntil = Date.now() + 60_000;
+    throw err;
+  }
+}
+
 const http = axios.create({
   timeout: 10000,
   headers: { 'User-Agent': USER_AGENT },
@@ -83,21 +102,19 @@ const http = axios.create({
 
 export async function fetchStopInfo(stopId: string): Promise<StopInfo> {
   return cached(`stop:${stopId}`, STOP_TTL_MS, async () => {
+    const fallback = FALLBACK_STOPS.find(s => s.id === stopId);
     try {
-      const { data } = await http.get(`${API_BASE_URL}/stops/${encodeURIComponent(`MARPROM:${stopId}`)}`);
-      return { name: data?.name, lat: data?.lat, lon: data?.lon };
+      const data = await brezavta<{ name?: string; lat?: number; lon?: number }>(`/stops/${encodeURIComponent(`MARPROM:${stopId}`)}`);
+      return { name: data?.name ?? fallback?.name, lat: data?.lat ?? fallback?.lat, lon: data?.lon ?? fallback?.lon };
     } catch {
-      return {};
+      return fallback ? { name: fallback.name, lat: fallback.lat, lon: fallback.lon } : {};
     }
   });
 }
 
 export async function fetchBrezavta(stopId: string): Promise<BrezavtaArrival[]> {
   return cached(`arr:${stopId}`, LIVE_TTL_MS, async () => {
-    const { data } = await http.get<BrezavtaArrival[]>(
-      `${API_BASE_URL}/stops/${encodeURIComponent(`MARPROM:${stopId}`)}/arrivals`,
-      { headers: { Accept: 'application/json' } }
-    );
+    const data = await brezavta<BrezavtaArrival[]>(`/stops/${encodeURIComponent(`MARPROM:${stopId}`)}/arrivals`);
     return Array.isArray(data) ? data : [];
   });
 }
@@ -132,9 +149,9 @@ export async function fetchMarpromTimetable(stopId: string, date: string): Promi
   });
 }
 
-function fromBrezavta(arrivals: BrezavtaArrival[], route: string, date: string): Schedule[] {
+function fromBrezavta(arrivals: BrezavtaArrival[], route: string, date: string, includePassed = false): Schedule[] {
   return arrivals
-    .filter(a => a.route_short_name === route && !a.passed)
+    .filter(a => a.route_short_name === route && (includePassed || !a.passed))
     .map(a => {
       const seconds = a.realtime ? a.arrival_realtime : a.arrival_scheduled;
       const epoch = serviceTimeToEpoch(date, seconds);
@@ -174,10 +191,12 @@ export interface StopListItem {
 
 export async function fetchStopList(): Promise<StopListItem[]> {
   return cached('stops:all', STOP_TTL_MS, async () => {
-    const { data } = await http.get<Array<{ gtfs_id?: string; name?: string; lat: number; lon: number }>>(
-      `${API_BASE_URL}/stops/`,
-      { timeout: 15000, headers: { Accept: 'application/json' } }
-    );
+    let data: Array<{ gtfs_id?: string; name?: string; lat: number; lon: number }>;
+    try {
+      data = await brezavta(`/stops/`, 15000);
+    } catch {
+      return FALLBACK_STOPS;
+    }
     return data
       .filter(s => s.gtfs_id?.startsWith('MARPROM:') && s.name)
       .map(s => ({ id: s.gtfs_id!.slice('MARPROM:'.length), name: s.name!, lat: s.lat, lon: s.lon }))
@@ -205,17 +224,23 @@ export interface RouteDeparturesOptions {
   limit?: number;
   /** Alighting stop: adds arrival estimates to each departure. */
   toStopId?: string;
+  /** Also return up to this many departures that are already due (`earlier`). */
+  before?: number;
 }
 
 export async function getRouteDepartures(
   stop: string,
   route: string,
-  { now = Date.now(), timetableOnly = false, limit = MAX_DEPARTURES, toStopId }: RouteDeparturesOptions = {}
+  { now = Date.now(), timetableOnly = false, limit = MAX_DEPARTURES, toStopId, before = 0 }: RouteDeparturesOptions = {}
 ): Promise<{ payload: ScheduleResponse; failed: boolean }> {
   const today = zonedDateString(new Date(now));
   const stopInfoPromise = fetchStopInfo(stop);
 
   let schedules: Schedule[] = [];
+  // Buses already due (newest last), so a late bus without live data and
+  // earlier departures can still be looked up.
+  let earlier: Schedule[] = [];
+  const isEarlier = (s: Schedule) => s.epoch <= now - GRACE_MS;
   let source: ScheduleResponse['source'] = 'none';
   let liveColor: string | undefined;
   let note: string | undefined;
@@ -229,7 +254,16 @@ export async function getRouteDepartures(
       const forRoute = arrivals.find(a => a.route_short_name === route);
       if (forRoute?.route_color_background) liveColor = `#${forRoute.route_color_background.replace('#', '')}`;
       schedules = upcoming(fromBrezavta(arrivals, route, today), now);
-      if (schedules.length) source = 'brezavta';
+      if (schedules.length) {
+        source = 'brezavta';
+        if (before > 0) {
+          earlier = fromBrezavta(arrivals, route, today, true)
+            .filter(s => isEarlier(s) || arrivals.some(a => a.trip_id === s.tripId && a.passed))
+            .filter(s => !schedules.some(x => x.tripId === s.tripId))
+            .sort((a, b) => a.epoch - b.epoch)
+            .slice(-before);
+        }
+      }
     } catch (err) {
       errors.push('brezavta');
       log('brezavta failed', err);
@@ -241,10 +275,14 @@ export async function getRouteDepartures(
   if (schedules.length < limit) {
     try {
       const tomorrowPage = fetchMarpromTimetable(stop, addDays(today, 1)).catch(() => ({}) as Record<string, TimetableRow[]>);
-      const todayTable = upcoming(fromTimetable((await fetchMarpromTimetable(stop, today))[route], today), now);
+      const todayAll = fromTimetable((await fetchMarpromTimetable(stop, today))[route], today);
+      const todayTable = upcoming(todayAll, now);
       if (!schedules.length && todayTable.length) {
         schedules = todayTable;
         source = 'marprom';
+      }
+      if (before > 0 && source !== 'brezavta') {
+        earlier = todayAll.filter(isEarlier).sort((a, b) => a.epoch - b.epoch).slice(-before);
       }
       if (schedules.length < limit) {
         const tomorrow = addDays(today, 1);
@@ -270,6 +308,7 @@ export async function getRouteDepartures(
     try {
       toStopName = (await fetchStopInfo(toStopId)).name;
       schedules = await addArrivals(stop, route, toStopId, schedules);
+      if (earlier.length) earlier = await addArrivals(stop, route, toStopId, earlier);
     } catch (err) {
       log('arrivals failed', err);
     }
@@ -291,6 +330,7 @@ export async function getRouteDepartures(
     toStop: toStopId,
     toStopName,
     limit,
+    earlier: before > 0 ? earlier : undefined,
     fetchedAt: now,
   };
   return { payload, failed: !schedules.length && errors.length === (timetableOnly ? 1 : 2) };
@@ -311,9 +351,8 @@ interface TripStopTime {
 
 async function fetchTrip(tripId: string, date: string): Promise<TripStopTime[]> {
   return cached(`trip:${tripId}:${date}`, LIVE_TTL_MS, async () => {
-    const { data } = await http.get<{ stop_times?: TripStopTime[] }>(
-      `${API_BASE_URL}/trips/${encodeURIComponent(tripId)}?date=${date.replaceAll('-', '')}`,
-      { headers: { Accept: 'application/json' } }
+    const data = await brezavta<{ stop_times?: TripStopTime[] }>(
+      `/trips/${encodeURIComponent(tripId)}?date=${date.replaceAll('-', '')}`
     );
     return data?.stop_times ?? [];
   });
@@ -333,15 +372,50 @@ function travelSeconds(stopTimes: TripStopTime[], from: string, to: string): num
  * timetable). Cached for a day.
  */
 async function typicalTravelSeconds(from: string, route: string, to: string): Promise<number | null> {
-  return cached(`travel:${from}:${route}:${to}`, STOP_TTL_MS, async () => {
-    const arrivals = (await fetchBrezavta(from)).filter(a => a.route_short_name === route);
+  const key = `travel:${from}:${route}:${to}`;
+  const result = await cached(key, STOP_TTL_MS, async () => {
+    // 1. From a real trip, when brezavta has any today.
+    const arrivals = (await fetchBrezavta(from).catch(() => [] as BrezavtaArrival[])).filter(a => a.route_short_name === route);
     const date = zonedDateString();
     for (const a of arrivals.slice(0, 4)) {
-      const t = travelSeconds(await fetchTrip(a.trip_id, date), from, to);
+      const t = travelSeconds(await fetchTrip(a.trip_id, date).catch(() => []), from, to);
       if (t !== null) return t;
     }
-    return null;
+    // 2. From the two printed timetables (weekdays, when the GTFS feed has gaps).
+    return travelFromTimetables(from, route, to, date);
   });
+  // Don't remember "unknown" for a day; try again next time.
+  if (result === null) cache.delete(key);
+  return result;
+}
+
+/**
+ * Median travel time between two stops from Marprom's printed timetables:
+ * each departure is paired with the first time at the destination that is at
+ * least a plausible ride away (straight-line distance at ~25 km/h, ×0.7).
+ */
+async function travelFromTimetables(from: string, route: string, to: string, date: string): Promise<number | null> {
+  const [a, b, fromPage, toPage] = await Promise.all([
+    fetchStopInfo(from),
+    fetchStopInfo(to),
+    fetchMarpromTimetable(from, date),
+    fetchMarpromTimetable(to, date),
+  ]);
+  if (a.lat === undefined || a.lon === undefined || b.lat === undefined || b.lon === undefined) return null;
+  const minRide = ((distanceM(a.lat, a.lon, b.lat, b.lon) * 1.3) / 417) * 0.7 * 60; // seconds
+  const toSec = (rows: TimetableRow[] | undefined) =>
+    (rows ?? []).flatMap(r => r.times.map(hhmmToSeconds)).sort((x, y) => x - y);
+  const origin = toSec(fromPage[route]);
+  const dest = toSec(toPage[route]);
+  if (!origin.length || !dest.length) return null;
+  const diffs: number[] = [];
+  for (const o of origin) {
+    const d = dest.find(t => t >= o + minRide);
+    if (d !== undefined && d - o <= 90 * 60) diffs.push(d - o);
+  }
+  if (diffs.length < 3) return null;
+  diffs.sort((x, y) => x - y);
+  return diffs[Math.floor(diffs.length / 2)];
 }
 
 async function addArrivals(from: string, route: string, to: string, schedules: Schedule[]): Promise<Schedule[]> {
