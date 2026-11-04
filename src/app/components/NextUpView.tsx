@@ -8,6 +8,7 @@ import { countdown, dayLabel } from '../lib/format';
 import { formatClock } from '../lib/time';
 import { splitJourneyName } from '../lib/defaults';
 import RouteBadge from './RouteBadge';
+import { mayUseHolidayTimetable } from '../lib/holidays';
 import UsualSection, { SOON_WINDOW_MS, usualDeparture } from './UsualSection';
 import { JUST_DUE_MS, mergeEarlier, type Departure } from './JourneyCard';
 
@@ -157,6 +158,9 @@ function GlanceRow({
                 {next.schedule.arrivalTime && <> · arrives {next.schedule.arrivalTime}</>}
               </span>
             </p>
+            {mayUseHolidayTimetable(next.schedule) && (
+              <p className="mt-0.5 truncate text-xs text-warn">School holidays: times may differ, check the sign</p>
+            )}
             {justDue && (
               <p className="mt-0.5 truncate text-xs text-warn tabular">
                 {justDue.route} {justDue.schedule.time} was due {Math.max(0, Math.floor((now - justDue.schedule.epoch) / 60_000))} min ago, may still be coming

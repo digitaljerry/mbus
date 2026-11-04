@@ -184,6 +184,8 @@ export const upcoming = (list: Schedule[], now: number) =>
 
 export interface StopListItem {
   id: string;
+  /** The ID printed on the stop's timetable sign (e.g. "226"). */
+  code?: string | null;
   name: string;
   lat: number;
   lon: number;
@@ -191,7 +193,7 @@ export interface StopListItem {
 
 export async function fetchStopList(): Promise<StopListItem[]> {
   return cached('stops:all', STOP_TTL_MS, async () => {
-    let data: Array<{ gtfs_id?: string; name?: string; lat: number; lon: number }>;
+    let data: Array<{ gtfs_id?: string; code?: string; name?: string; lat: number; lon: number }>;
     try {
       data = await brezavta(`/stops/`, 15000);
     } catch {
@@ -199,7 +201,7 @@ export async function fetchStopList(): Promise<StopListItem[]> {
     }
     return data
       .filter(s => s.gtfs_id?.startsWith('MARPROM:') && s.name)
-      .map(s => ({ id: s.gtfs_id!.slice('MARPROM:'.length), name: s.name!, lat: s.lat, lon: s.lon }))
+      .map(s => ({ id: s.gtfs_id!.slice('MARPROM:'.length), code: s.code?.replace(/^s/, '') || null, name: s.name!, lat: s.lat, lon: s.lon }))
       .sort((a, b) => a.name.localeCompare(b.name, 'sl'));
   });
 }

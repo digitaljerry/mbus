@@ -6,6 +6,7 @@ import type { Vehicle } from '../types';
 import { countdown, dayLabel, delayInfo } from '../lib/format';
 import { zonedDateString } from '../lib/time';
 import RouteBadge from './RouteBadge';
+import { HOLIDAY_NOTICE, mayUseHolidayTimetable } from '../lib/holidays';
 import type { Departure } from './JourneyCard';
 
 /** Stable identity for a departure across refreshes (times shift with delays). */
@@ -163,6 +164,9 @@ export default function DepartureSheet({
               <span className="text-ink-3">Timetable time{d.source === 'marprom' ? ' (Marprom)' : ''}, no live data</span>
             )}
           </p>
+          {mayUseHolidayTimetable(d.schedule) && (
+            <p className="mx-auto mt-3 max-w-xs rounded-xl bg-warn/10 px-3 py-2 text-xs leading-snug text-warn">{HOLIDAY_NOTICE}</p>
+          )}
           {nav && nav.total > 1 && (
             <p className="mt-3 text-[0.7rem] text-ink-3 sm:hidden">Swipe for the previous or next bus</p>
           )}

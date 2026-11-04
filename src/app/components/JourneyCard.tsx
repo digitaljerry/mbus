@@ -4,6 +4,7 @@ import { AlertTriangle, Bus, ChevronDown, ChevronRight, ChevronUp, MapPin, Moon,
 import type { BusStop, Schedule, ScheduleResponse, Vehicle } from '../types';
 import { countdown, dayLabel, delayInfo } from '../lib/format';
 import { splitJourneyName } from '../lib/defaults';
+import { HOLIDAY_NOTICE, mayUseHolidayTimetable } from '../lib/holidays';
 import { legKey } from '../hooks/useSchedules';
 import RouteBadge from './RouteBadge';
 
@@ -196,6 +197,12 @@ export default function JourneyCard({
       </header>
 
       <div className="flex-1 px-4 pb-4 pt-3 sm:px-5">
+        {next && [next, ...later].some(d => mayUseHolidayTimetable(d.schedule)) && (
+          <p className="mb-3 flex gap-2 rounded-xl bg-warn/10 px-3 py-2 text-xs leading-snug text-warn">
+            <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden />
+            {HOLIDAY_NOTICE}
+          </p>
+        )}
         {!next && loading ? (
           <div className="space-y-3" aria-busy>
             <div className="h-20 animate-pulse rounded-xl bg-surface-2" />

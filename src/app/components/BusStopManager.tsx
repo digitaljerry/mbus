@@ -9,6 +9,8 @@ import RouteBadge from './RouteBadge';
 
 export interface StopListItem {
   id: string;
+  /** ID printed on the stop's timetable sign. */
+  code?: string | null;
   name: string;
 }
 
@@ -342,7 +344,10 @@ export function StopPicker({
   const matches = useMemo(() => {
     const q = normalize(query.trim());
     if (!q) return [];
-    return stopList.filter(s => s.id === q || normalize(s.name).includes(q)).slice(0, 8);
+    // A number matches the ID printed on the stop's timetable sign.
+    const exact = stopList.filter(s => s.code === q);
+    const byName = stopList.filter(s => !exact.includes(s) && normalize(s.name).includes(q));
+    return [...exact, ...byName].slice(0, 8);
   }, [query, stopList]);
 
   return (
@@ -351,7 +356,10 @@ export function StopPicker({
       {value && !open ? (
         <div className="mt-1 flex items-center gap-1">
           <button onClick={() => { setOpen(true); setQuery(''); }} className="input flex w-full items-center justify-between text-left">
-            <span className="truncate">{name ?? 'Stop'} <span className="text-ink-3">#{value}</span></span>
+            <span className="truncate">
+              {name ?? 'Stop'}{' '}
+              <span className="text-ink-3">{(() => { const c = stopList.find(x => x.id === value)?.code; return c ? `ID ${c}` : `#${value}`; })()}</span>
+            </span>
             <Pencil className="size-3.5 shrink-0 text-ink-3" />
           </button>
           {clearable && (
@@ -368,7 +376,7 @@ export function StopPicker({
             onChange={e => { setQuery(e.target.value); setOpen(true); }}
             onFocus={() => setOpen(true)}
             onBlur={() => setTimeout(() => setOpen(false), 150)}
-            placeholder="Search stop name or number"
+            placeholder="Stop name or ID from the sign"
             className="input pl-9"
             inputMode="search"
           />
@@ -382,7 +390,7 @@ export function StopPicker({
                     className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-surface-2"
                   >
                     <span className="truncate">{s.name}</span>
-                    <span className="shrink-0 text-xs text-ink-3">#{s.id}</span>
+                    <span className="shrink-0 text-xs text-ink-3">{s.code ? `ID ${s.code}` : `#${s.id}`}</span>
                   </button>
                 </li>
               ))}
