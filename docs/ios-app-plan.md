@@ -80,6 +80,8 @@ App Intents such as "Next bus home", "Start tracking my bus" and "Nearby buses".
 
 ## Architecture
 
+The app lives in [`apps/apple`](../apps/apple) in this repository, next to the web app and API in `apps/web`.
+
 ```
 iOS app (SwiftUI, iOS 17+)
  ├─ MBusKit (Swift package; shared by app, widgets, Live Activity, intents)
