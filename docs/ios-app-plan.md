@@ -1,7 +1,7 @@
 # MBus for iOS: plan
 
 Status: plan, not started · updated Nov 2026
-Related: [accounts plan](accounts-plan.md) · live roadmap on the [About page](https://mbus.vercel.app/about), from `src/app/lib/roadmap.ts`
+Related: [accounts plan](accounts-plan.md) · live roadmap on the [About page](https://mbus.vercel.app/about), from `apps/web/src/app/lib/roadmap.ts`
 
 ## Web app vs iOS app
 
@@ -51,10 +51,10 @@ Android uses the web app, which installs as a PWA and supports everything in the
 ## What the iOS app adds
 
 ### Usual buses + reminders (M1)
-Same model as the web app (`src/app/lib/usual.ts`): stop, line, timetable time, weekdays, walking time, optional destination, reminder lead time.
+Same model as the web app (`apps/web/src/app/lib/usual.ts`): stop, line, timetable time, weekdays, walking time, optional destination, reminder lead time.
 - Reminders are `UNUserNotificationCenter` local notifications with `.timeSensitive` interruption level. The next ~7 days are scheduled on device (iOS allows 64 pending), and rescheduled on app open and in `BGAppRefreshTask`.
 - Works offline, with no server needed for the basic case.
-- Delay-aware reminders (M5) reuse the server scheduler that already powers web reminders (`src/workflows/reminders.ts`), sending APNs instead of Web Push.
+- Delay-aware reminders (M5) reuse the server scheduler that already powers web reminders (`apps/web/src/workflows/reminders.ts`), sending APNs instead of Web Push.
 
 ### Nearby (M3)
 When-In-Use location, with the stop list bundled and refreshed weekly from `/api/stops`. It uses the existing `/api/nearby` endpoint. Walking time comes from MapKit walking directions instead of the straight-line estimate the web app uses.
@@ -84,8 +84,8 @@ App Intents such as "Next bus home", "Start tracking my bus" and "Nearby buses".
 iOS app (SwiftUI, iOS 17+)
  ├─ MBusKit (Swift package; shared by app, widgets, Live Activity, intents)
  │   ├─ API client → mbus.vercel.app/api/*
- │   ├─ Models: Stop, Departure, Vehicle, Journey, UsualBus (mirror src/app/types.ts, lib/usual.ts)
- │   ├─ Time: Europe/Ljubljana rules (mirror src/app/lib/time.ts)
+ │   ├─ Models: Stop, Departure, Vehicle, Journey, UsualBus (mirror apps/web/src/app/types.ts, lib/usual.ts)
+ │   ├─ Time: Europe/Ljubljana rules (mirror apps/web/src/app/lib/time.ts)
  │   └─ Store: SwiftData in an App Group container (shared with extensions)
  ├─ Widget extension (WidgetKit + ActivityKit UI)
  └─ App Intents
