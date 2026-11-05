@@ -5,7 +5,7 @@ The MBus website and the API (`/api/*`) that all MBus clients use. Next.js App R
 ## Features
 
 - **Journeys**: one-tap shortcuts such as Home → School or Office → Home. Each journey merges departures from every stop/line you might board.
-- **Live countdowns**: minutes to the next bus, m:ss in the last 10 minutes, with real-time delays when Marprom publishes them. Tap any departure for a full-screen countdown.
+- **Live countdowns**: minutes to the next bus, m:ss in the last 10 minutes, with real-time delays from Marprom's live system (the same data as the boards at stops). Tap any departure for a full-screen countdown.
 - **Arrival times**: set where you get off to see when you arrive.
 - **Usual buses**: bookmark the bus you take regularly (days + walking time) to get a leave-by time.
 - **Reminders**: Web Push notifications before it's time to leave, adjusted for delays (on iPhone, add MBus to the Home Screen first).
@@ -29,10 +29,13 @@ Open [http://localhost:3000](http://localhost:3000) to view the app.
 
 ## Data Sources
 
-1. **[brezavta.si](https://brezavta.si)** (`api.beta.brezavta.si`): real-time arrivals, vehicle positions, stop list and route shapes, built from Marprom's GTFS feed.
-2. **[Marprom timetables](https://vozniredi.marprom.si/)**: when brezavta has no trips for a stop/line (Marprom's GTFS feed has had gaps in its weekday calendar), `/api/schedules` scrapes the official timetable page instead, and falls back to tomorrow's timetable late at night.
+1. **Marprom real-time API** (`https://vozniredi.marprom.si/OBA/…`, undocumented, no key): the data behind the arrival boards at stops. `GetArrivalsForStopPoint?stopPointId=` gives the next bus or two per line with timetabled time (`ArrivalTime`), minutes to go (`ETAMin`), fleet number (`BusCode`) and, only while the bus is tracked, `DelayMin`. `GetActiveDeviceDetails` gives bus positions, `GetLines` maps `LineId` to line codes. Errors and "no data" (e.g. at night) come back as HTTP 200 with `Response.Status: -1`. Code in `src/app/lib/oba.ts`; it is laid over whichever list below is used, matched on the timetabled time. Responses are cached 10 s per stop. Marprom's firewall is known to drop traffic from Cloudflare's network; Vercel reaches it.
+2. **[brezavta.si](https://brezavta.si)** (`api.beta.brezavta.si`): departure lists with trip IDs (for exact arrival times), the stop list and route shapes, built from Marprom's GTFS feed. Also the fallback for bus positions.
+3. **[Marprom timetables](https://vozniredi.marprom.si/)**: when brezavta has no trips for a stop/line (Marprom's GTFS feed at `vozniredi.marprom.si/GTFS/gtfs.zip` often lags the real timetable), `/api/schedules` scrapes the official timetable page instead, and falls back to tomorrow's timetable late at night.
 
 The scraper depends on Marprom's HTML (`<div id="l-ROUTE">` followed by a table of directions and times); recheck it if their site changes.
+
+`source` in `/api/schedules` is `marprom-live` when live data was used, otherwise `brezavta` or `marprom`. Departures and vehicles carry `busCode`, which links a departure to its bus on the map.
 
 API routes: `/api/schedules?stop=255&route=G6&to=326`, `/api/nearby?lat=…&lon=…`, `/api/vehicles?routes=G6,P18`, `/api/stops`, `/api/geometry?trip=MARPROM:…`, `/api/push/{config,sync,test}`. In development, `&at=<epoch ms>` on `/api/schedules` simulates another moment (timetable path only).
 

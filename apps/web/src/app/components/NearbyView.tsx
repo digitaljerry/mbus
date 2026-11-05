@@ -140,7 +140,7 @@ export default function NearbyView({ status, position, now, onRetry, onStops, on
                     color: first.routeColor,
                     stopId: s.stop,
                     stopName: s.stopName,
-                    source: sch.realtime ? 'brezavta' : 'marprom',
+                    source: sch.realtime ? 'marprom-live' : 'marprom',
                   });
                   return (
                     <li key={`${first.route}|${first.destination}`}>

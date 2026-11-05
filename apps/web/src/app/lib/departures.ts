@@ -2,6 +2,8 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import type { Schedule, ScheduleResponse } from '../types';
 import { routeColor } from './routeColors';
+import { cached, uncache } from './cache';
+import { fetchLiveArrivals, type LiveDeparture } from './oba';
 // Bundled copy of Marprom's stop list (id, name, position), used when
 // brezavta is unreachable.
 import FALLBACK_STOPS from './marprom-stops.json';
@@ -13,8 +15,9 @@ import {
   zonedDateString,
 } from './time';
 
-// Departure data from brezavta (live, GTFS based) with Marprom's printed
-// timetable as fallback. Shared by the schedules, nearby and reminder code.
+// Departure data: brezavta (GTFS based) or Marprom's printed timetable as the
+// list of departures, with Marprom's real-time API (the stop boards' data)
+// laid over it. Shared by the schedules, nearby and reminder code.
 
 const DEBUG = process.env.NODE_ENV !== 'production' && process.env.DEBUG === '1';
 
@@ -59,24 +62,6 @@ interface StopInfo {
 interface TimetableRow {
   destination: string;
   times: string[];
-}
-
-// Caches promises, so concurrent requests for the same page share one fetch.
-const cache = new Map<string, { expires: number; value: Promise<unknown> }>();
-
-function cached<T>(key: string, ttl: number, load: () => Promise<T>): Promise<T> {
-  const hit = cache.get(key);
-  if (hit && hit.expires > Date.now()) return hit.value as Promise<T>;
-  const value = load();
-  cache.set(key, { expires: Date.now() + ttl, value });
-  value.catch(() => {
-    if (cache.get(key)?.value === value) cache.delete(key);
-  });
-  if (cache.size > 2000) {
-    const now = Date.now();
-    for (const [k, v] of cache) if (v.expires <= now) cache.delete(k);
-  }
-  return value;
 }
 
 // When brezavta fails, skip it for a minute instead of waiting for timeouts
@@ -179,6 +164,48 @@ function fromTimetable(rows: TimetableRow[] | undefined, date: string): Schedule
 
 export const upcoming = (list: Schedule[], now: number) =>
   list.filter(s => s.epoch > now - GRACE_MS).sort((a, b) => a.epoch - b.epoch);
+
+const scheduledEpochOf = (s: Schedule) => s.epoch - (s.delay ?? 0) * 1000;
+// Same timetabled departure: same HH:MM, and on the same day.
+const sameDeparture = (s: Schedule, l: LiveDeparture) =>
+  s.scheduledTime === l.schedule.scheduledTime && Math.abs(scheduledEpochOf(s) - l.scheduledEpoch) < 3 * 3600_000;
+
+/**
+ * Lays Marprom's live data over a list of departures. A tracked bus replaces
+ * its timetabled entry (keeping the trip ID and full destination name), and
+ * one that's due but missing from the list is added. Departures in `earlier`
+ * that turn out to be tracked are taken out of it: they're still coming.
+ */
+function applyLive(
+  schedules: Schedule[],
+  earlier: Schedule[],
+  live: LiveDeparture[],
+  now: number
+): { schedules: Schedule[]; earlier: Schedule[]; used: boolean } {
+  if (!live.length) return { schedules, earlier, used: false };
+  const out = [...schedules];
+  let used = false;
+  const merge = (base: Schedule, l: LiveDeparture): Schedule =>
+    l.schedule.realtime
+      ? { ...base, time: l.schedule.time, epoch: l.schedule.epoch, delay: l.schedule.delay, realtime: true, busCode: l.schedule.busCode }
+      : { ...base, busCode: l.schedule.busCode };
+  for (const l of live) {
+    const i = out.findIndex(s => sameDeparture(s, l));
+    if (i >= 0) {
+      out[i] = merge(out[i], l);
+    } else {
+      // A late bus whose timetabled time has passed: keep that entry's details.
+      const past = l.schedule.realtime ? earlier.find(e => sameDeparture(e, l)) : undefined;
+      out.push(past ? merge(past, l) : l.schedule);
+    }
+    used ||= !!l.schedule.realtime;
+  }
+  return {
+    schedules: upcoming(out, now),
+    earlier: earlier.filter(e => !live.some(l => l.schedule.realtime && sameDeparture(e, l))),
+    used,
+  };
+}
 // ---------------------------------------------------------------------------
 // Stops
 
@@ -237,6 +264,12 @@ export async function getRouteDepartures(
 ): Promise<{ payload: ScheduleResponse; failed: boolean }> {
   const today = zonedDateString(new Date(now));
   const stopInfoPromise = fetchStopInfo(stop);
+  const livePromise: Promise<LiveDeparture[]> = timetableOnly
+    ? Promise.resolve([])
+    : fetchLiveArrivals(stop).catch(err => {
+        log('oba failed', err);
+        return [];
+      });
 
   let schedules: Schedule[] = [];
   // Buses already due (newest last), so a late bus without live data and
@@ -248,7 +281,7 @@ export async function getRouteDepartures(
   let note: string | undefined;
   const errors: string[] = [];
 
-  // 1. Brezavta: real-time where available, but only knows trips that exist in
+  // 1. Brezavta: trip IDs (exact arrival times), but only knows trips in
   //    Marprom's GTFS feed (which has had gaps in its weekday calendar).
   if (!timetableOnly) {
     try {
@@ -304,6 +337,13 @@ export async function getRouteDepartures(
     }
   }
 
+  // 3. Marprom's real-time data, laid over whichever list we have.
+  const live = (await livePromise).filter(l => l.route === route);
+  const applied = applyLive(schedules, earlier, live, now);
+  schedules = applied.schedules;
+  earlier = applied.earlier;
+  if (applied.used || (source === 'none' && schedules.length)) source = 'marprom-live';
+
   schedules = schedules.slice(0, limit);
   let toStopName: string | undefined;
   if (toStopId && schedules.length) {
@@ -326,7 +366,7 @@ export async function getRouteDepartures(
     routeColor: routeColor(route, liveColor),
     date: today,
     schedules,
-    url: source === 'marprom' ? `${MARPROM_BASE_URL}/?stop=${stop}&datum=${today}` : `${WEBSITE_BASE_URL}/stop/MARPROM:${stop}`,
+    url: source === 'brezavta' ? `${WEBSITE_BASE_URL}/stop/MARPROM:${stop}` : `${MARPROM_BASE_URL}/?stop=${stop}&datum=${today}`,
     source,
     note,
     toStop: toStopId,
@@ -335,7 +375,7 @@ export async function getRouteDepartures(
     earlier: before > 0 ? earlier : undefined,
     fetchedAt: now,
   };
-  return { payload, failed: !schedules.length && errors.length === (timetableOnly ? 1 : 2) };
+  return { payload, failed: !schedules.length && !live.length && errors.length === (timetableOnly ? 1 : 2) };
 }
 
 // ---------------------------------------------------------------------------
@@ -387,7 +427,7 @@ async function typicalTravelSeconds(from: string, route: string, to: string): Pr
     return travelFromTimetables(from, route, to, date);
   });
   // Don't remember "unknown" for a day; try again next time.
-  if (result === null) cache.delete(key);
+  if (result === null) uncache(key);
   return result;
 }
 
@@ -439,8 +479,19 @@ async function addArrivals(from: string, route: string, to: string, schedules: S
     return destTimes;
   };
 
+  // Live: the same bus in Marprom's arrivals at the destination stop.
+  const liveAtDest = schedules.some(s => s.busCode && s.realtime)
+    ? (await fetchLiveArrivals(to).catch(() => [] as LiveDeparture[])).filter(l => l.route === route)
+    : [];
+
   return Promise.all(
     schedules.map(async (s, index) => {
+      if (s.busCode && s.realtime) {
+        const hit = liveAtDest
+          .filter(l => l.schedule.busCode === s.busCode && l.schedule.epoch > s.epoch && l.schedule.epoch - s.epoch < 90 * 60_000)
+          .sort((a, b) => a.schedule.epoch - b.schedule.epoch)[0];
+        if (hit) return { ...s, arrivalEpoch: hit.schedule.epoch, arrivalTime: hit.schedule.time };
+      }
       // Exact: the trip's own stop times (with real-time if available).
       // Only for the first few, so long "show more" lists stay cheap.
       if (s.tripId && index < EXACT_ARRIVALS) {
@@ -485,21 +536,28 @@ export interface StopBoard {
 export async function getStopBoard(stop: string, { now = Date.now(), perRoute = 3 } = {}): Promise<StopBoard> {
   const today = zonedDateString(new Date(now));
   const tomorrow = addDays(today, 1);
-  const [info, arrivals, timetable, timetableTomorrow] = await Promise.all([
+  const [info, arrivals, timetable, timetableTomorrow, live] = await Promise.all([
     fetchStopInfo(stop),
     fetchBrezavta(stop).catch(() => [] as BrezavtaArrival[]),
     fetchMarpromTimetable(stop, today).catch(() => ({}) as Record<string, TimetableRow[]>),
     fetchMarpromTimetable(stop, tomorrow).catch(() => ({}) as Record<string, TimetableRow[]>),
+    fetchLiveArrivals(stop).catch(() => [] as LiveDeparture[]),
   ]);
   const colors = new Map<string, string>();
   arrivals.forEach(a => a.route_color_background && colors.set(a.route_short_name, `#${a.route_color_background.replace('#', '')}`));
-  const routes = new Set([...arrivals.map(a => a.route_short_name), ...Object.keys(timetable), ...Object.keys(timetableTomorrow)]);
+  const routes = new Set([
+    ...arrivals.map(a => a.route_short_name),
+    ...Object.keys(timetable),
+    ...Object.keys(timetableTomorrow),
+    ...live.map(l => l.route),
+  ]);
 
   const departures: StopBoard['departures'] = [];
   for (const route of routes) {
     let list = upcoming(fromBrezavta(arrivals, route, today), now);
     if (!list.length) list = upcoming(fromTimetable(timetable[route], today), now);
     if (!list.length) list = upcoming(fromTimetable(timetableTomorrow[route], tomorrow), now);
+    list = applyLive(list, [], live.filter(l => l.route === route), now).schedules;
     // Keep the next few per direction.
     const byDirection = new Map<string, Schedule[]>();
     list.forEach(s => {
