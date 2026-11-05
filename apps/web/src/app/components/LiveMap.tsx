@@ -180,11 +180,22 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, userPositi
     };
   }, []);
 
-  // Resize when revealed (e.g. switching to the Map tab on mobile).
+  // Resize when revealed (e.g. switching to the Map tab on mobile). A fit
+  // done while the map was hidden had no size to work with, so redo it.
+  const networkRef = useRef<{ lines: NetworkLine[]; highlight?: string | null } | null>(null);
   useEffect(() => {
     const map = mapRef.current;
+    const lib = libRef.current;
     if (!map) return;
-    const id = requestAnimationFrame(() => map.resize());
+    const id = requestAnimationFrame(() => {
+      map.resize();
+      const n = networkRef.current;
+      if (lib && n?.lines.length) {
+        const bounds = new lib.LngLatBounds();
+        n.lines.filter(l => !n.highlight || l.route === n.highlight).forEach(l => l.variants.forEach(v => v.shape.forEach(p => bounds.extend(p))));
+        if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 40, maxZoom: 15, duration: 0 });
+      }
+    });
     return () => cancelAnimationFrame(id);
   }, [visibleKey]);
 
@@ -217,6 +228,7 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, userPositi
     const lib = libRef.current;
     if (!ready || !map || !lib) return;
     const lines = network ?? [];
+    networkRef.current = lines.length ? { lines, highlight: highlightRoute } : null;
     // The highlighted line is drawn last so it sits on top.
     const ordered = highlightRoute ? [...lines.filter(l => l.route !== highlightRoute), ...lines.filter(l => l.route === highlightRoute)] : lines;
     (map.getSource('network') as GeoJSONSource).setData({

@@ -93,6 +93,12 @@ export const ROADMAP: FeatureGroup[] = [
         ios: { status: 'planned', note: 'M0 · MapKit' },
       },
       {
+        name: 'All lines map',
+        description: 'Every line drawn in its colour with all live buses; tap a line for its stops, plus Marprom\'s network and line PDFs.',
+        web: { status: 'live' },
+        ios: { status: 'planned', note: 'M3' },
+      },
+      {
         name: 'Nearby stops',
         description: 'Stops within walking distance of you, with what leaves next on every line.',
         web: { status: 'live' },

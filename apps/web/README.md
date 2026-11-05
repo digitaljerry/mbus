@@ -39,6 +39,10 @@ The scraper depends on Marprom's HTML (`<div id="l-ROUTE">` followed by a table 
 
 API routes: `/api/schedules?stop=255&route=G6&to=326`, `/api/nearby?lat=…&lon=…`, `/api/vehicles?routes=G6,P18`, `/api/stops`, `/api/geometry?trip=MARPROM:…`, `/api/push/{config,sync,test}`. In development, `&at=<epoch ms>` on `/api/schedules` simulates another moment (timetable path only).
 
+## Route network data
+
+The All lines map uses `src/app/lib/network.json` (every line's shape and stops). It's generated from brezavta (Marprom GTFS) and committed, because routes rarely change. Regenerate after a timetable change with `npm run build:network` (about 2 minutes; set `DATES=YYYYMMDD,…` to scan specific service days).
+
 ## Reminders (Web Push) setup
 
 Reminders run on [Vercel Workflow](https://vercel.com/docs/workflows): one durable workflow per device sleeps until the next reminder is due, checks live data, sends the notification and goes back to sleep. No database and no cron job; it works on any Vercel plan.
