@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Map as MlMap, Marker, Popup, GeoJSONSource } from 'maplibre-gl';
 import { LocateFixed } from 'lucide-react';
 import type { Vehicle } from '../types';
+import type { NetworkLine } from '../lib/network';
 import { readableTextOn } from '../lib/routeColors';
 
 export interface MapStop {
@@ -29,6 +30,10 @@ interface Props {
   visibleKey?: string | number;
   /** Your position, shown as a blue dot (Nearby view). */
   userPosition?: { lat: number; lon: number } | null;
+  /** All lines view: every line drawn in its colour (replaces per-bus route lines). */
+  network?: NetworkLine[] | null;
+  /** Highlight one line of the network and fade the rest. */
+  highlightRoute?: string | null;
   className?: string;
 }
 
@@ -68,7 +73,7 @@ function styleMarkerEl(el: HTMLElement, v: Vehicle, focused: boolean) {
   el.classList.toggle('bus-marker--focused', focused);
 }
 
-export default function LiveMap({ stops, vehicles, focus, visibleKey, userPosition, className }: Props) {
+export default function LiveMap({ stops, vehicles, focus, visibleKey, userPosition, network, highlightRoute, className }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
   const libRef = useRef<typeof import('maplibre-gl') | null>(null);
@@ -100,6 +105,22 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, userPositi
         'top-right'
       );
       map.on('load', () => {
+        // Whole network (All lines view), drawn under everything else.
+        map.addSource('network', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+        map.addLayer({
+          id: 'network-casing',
+          type: 'line',
+          source: 'network',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': dark ? '#0b0e13' : '#ffffff', 'line-width': 6, 'line-opacity': 0.7 },
+        });
+        map.addLayer({
+          id: 'network',
+          type: 'line',
+          source: 'network',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': ['get', 'color'], 'line-width': 3.5, 'line-opacity': 0.85 },
+        });
         map.addSource('routes', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
         map.addLayer({
           id: 'routes-casing',
@@ -189,6 +210,42 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, userPositi
     }
   }, [stops, ready]);
 
+  // --- network (All lines) ------------------------------------------------
+  const networkFitted = useRef<string | null>(null);
+  useEffect(() => {
+    const map = mapRef.current;
+    const lib = libRef.current;
+    if (!ready || !map || !lib) return;
+    const lines = network ?? [];
+    // The highlighted line is drawn last so it sits on top.
+    const ordered = highlightRoute ? [...lines.filter(l => l.route !== highlightRoute), ...lines.filter(l => l.route === highlightRoute)] : lines;
+    (map.getSource('network') as GeoJSONSource).setData({
+      type: 'FeatureCollection',
+      features: ordered.flatMap(l =>
+        l.variants.map(v => ({
+          type: 'Feature' as const,
+          properties: { route: l.route, color: l.color },
+          geometry: { type: 'LineString' as const, coordinates: v.shape },
+        }))
+      ),
+    });
+    const hl = highlightRoute ?? '';
+    map.setPaintProperty('network', 'line-opacity', hl ? ['case', ['==', ['get', 'route'], hl], 0.95, 0.12] : 0.85);
+    map.setPaintProperty('network', 'line-width', hl ? ['case', ['==', ['get', 'route'], hl], 5.5, 3] : 3.5);
+    map.setPaintProperty('network-casing', 'line-opacity', hl ? ['case', ['==', ['get', 'route'], hl], 0.9, 0] : 0.7);
+    map.setPaintProperty('network-casing', 'line-width', hl ? 9 : 6);
+
+    // Fit the whole network once, then the highlighted line when it changes.
+    const target = lines.length ? (hl || 'all') : null;
+    if (target && networkFitted.current !== target) {
+      networkFitted.current = target;
+      const bounds = new lib.LngLatBounds();
+      lines.filter(l => !hl || l.route === hl).forEach(l => l.variants.forEach(v => v.shape.forEach(p => bounds.extend(p))));
+      if (!bounds.isEmpty()) map.fitBounds(bounds, { padding: 40, maxZoom: 15, duration: 700 });
+    }
+    if (!lines.length) networkFitted.current = null;
+  }, [network, highlightRoute, ready]);
+
   // --- vehicles ---------------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
@@ -252,7 +309,7 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, userPositi
 
     // Draw the line for every trip on the map (shapes are cached).
     let cancelled = false;
-    const trips = [...new Map(vehicles.filter(v => v.tripId).map(v => [v.tripId!, v])).values()];
+    const trips = network?.length ? [] : [...new Map(vehicles.filter(v => v.tripId).map(v => [v.tripId!, v])).values()];
     Promise.all(
       trips.map(async v => {
         const id = v.tripId!;
@@ -277,7 +334,7 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, userPositi
     return () => {
       cancelled = true;
     };
-  }, [vehicles, ready, focusedVehicle]);
+  }, [vehicles, ready, focusedVehicle, network]);
 
   // --- your position ----------------------------------------------------
   const userMarkerRef = useRef<Marker | null>(null);
@@ -340,7 +397,7 @@ export default function LiveMap({ stops, vehicles, focus, visibleKey, userPositi
         onClick={recenter}
         className="absolute bottom-24 left-3 inline-flex lg:bottom-3 items-center gap-1.5 rounded-lg bg-surface px-3 py-2 text-xs font-medium text-ink shadow-card ring-1 ring-line"
       >
-        <LocateFixed className="size-4" aria-hidden /> Fit journey
+        <LocateFixed className="size-4" aria-hidden /> {network?.length ? "Fit lines" : "Fit journey"}
       </button>
       <div className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-2 rounded-lg bg-surface/90 px-2.5 py-1.5 text-xs font-medium text-ink-2 shadow-card ring-1 ring-line backdrop-blur">
         <span className="live-dot" aria-hidden />

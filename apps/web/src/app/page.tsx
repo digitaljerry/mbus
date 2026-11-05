@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Settings2, Star, Sun, WifiOff, Zap } from 'lucide-react';
+import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Route, Settings2, Star, Sun, WifiOff, Zap } from 'lucide-react';
 import { vehicleFor, type BusStop, type Vehicle } from './types';
 import { loadPinnedStops, loadUsualBuses, savePinnedStops, saveUsualBuses } from './utils/storage';
 import { DEFAULT_STOPS, splitJourneyName } from './lib/defaults';
@@ -25,6 +25,8 @@ import UsualBusEditor from './components/UsualBusEditor';
 import NearbyView, { type NearbyStop } from './components/NearbyView';
 import UsualView from './components/UsualView';
 import NextUpView from './components/NextUpView';
+import LinesView from './components/LinesView';
+import { useNetwork } from './hooks/useNetwork';
 import type { MapFocus, MapStop } from './components/LiveMap';
 
 const LiveMap = dynamic(() => import('./components/LiveMap'), {
@@ -39,6 +41,7 @@ const ALL = 'all';
 const NEARBY = 'nearby';
 const USUAL = 'usual';
 const NEXT = 'next';
+const LINES = 'lines';
 // One-time: make the new Next up tab the starting view.
 const NEXT_MIGRATION_KEY = 'mbus-next-up-v1';
 
@@ -110,7 +113,7 @@ export default function Home() {
       }
     } catch {}
     const want = params.get('j') ?? stored ?? NEXT;
-    setSelected([ALL, NEARBY, USUAL, NEXT].includes(want) || stops.some(s => s.id === want) ? want : NEXT);
+    setSelected([ALL, NEARBY, USUAL, NEXT, LINES].includes(want) || stops.some(s => s.id === want) ? want : NEXT);
     // Opened from a reminder notification: show that bus.
     const usualId = params.get('usual');
     if (usualId) {
@@ -150,7 +153,7 @@ export default function Home() {
     (next: BusStop[]) => {
       setJourneys(next);
       savePinnedStops(next);
-      if (![ALL, NEARBY, USUAL, NEXT].includes(selected) && !next.some(j => j.id === selected)) select(NEXT);
+      if (![ALL, NEARBY, USUAL, NEXT, LINES].includes(selected) && !next.some(j => j.id === selected)) select(NEXT);
     },
     [selected, select]
   );
@@ -163,6 +166,8 @@ export default function Home() {
   const isNearby = selected === NEARBY;
   const isUsualView = selected === USUAL;
   const isNext = selected === NEXT;
+  const isLines = selected === LINES;
+  const [selectedLine, setSelectedLine] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Views that show usual buses (and their stops/buses on the map).
   const showsUsual = selected === ALL || isUsualView || isNext;
@@ -209,14 +214,21 @@ export default function Home() {
 
   const geo = useGeolocation(isNearby);
   const push = usePush(usual, loaded);
+  const { network, failed: networkFailed } = useNetwork(isLines);
 
   const visibleRoutes = useMemo(() => {
     if (isNearby) return [...new Set(nearbyStops.flatMap(s => s.departures.map(d => d.route)))];
+    if (isLines) return network ? network.lines.map(l => l.route) : [];
     const fromJourneys = visible.flatMap(j => j.stops.map(s => s.route.toUpperCase()));
     const fromUsual = showsUsual ? usual.map(u => u.route.toUpperCase()) : [];
     return [...new Set([...fromJourneys, ...fromUsual])];
-  }, [visible, isNearby, nearbyStops, usual, showsUsual]);
+  }, [visible, isNearby, nearbyStops, usual, showsUsual, isLines, network]);
   const { vehicles } = useVehicles(visibleRoutes, loaded);
+  // All lines with one selected: only that line's buses on the map.
+  const mapVehicles = useMemo(
+    () => (isLines && selectedLine ? vehicles.filter(v => v.route === selectedLine) : vehicles),
+    [vehicles, isLines, selectedLine]
+  );
 
   const vehiclesByTrip = useMemo(() => {
     const m = new Map<string, Vehicle>();
@@ -228,6 +240,15 @@ export default function Home() {
   }, [vehicles]);
 
   const mapStops = useMemo<MapStop[]>(() => {
+    if (isLines) {
+      const line = network?.lines.find(l => l.route === selectedLine);
+      if (!line || !network) return [];
+      const ids = [...new Set(line.variants.flatMap(v => v.stops))];
+      return ids.flatMap(id => {
+        const st = network.stops[id];
+        return st ? [{ id, name: st[0], lat: st[1], lon: st[2], color: line.color }] : [];
+      });
+    }
     if (isNearby) {
       return nearbyStops.map(s => ({ id: s.stop, name: s.stopName, lat: s.lat, lon: s.lon, color: s.departures[0]?.routeColor ?? '#475569' }));
     }
@@ -241,7 +262,7 @@ export default function Home() {
     visible.forEach(j => j.stops.forEach(s => add(s.stopId, s.route, s.toStopId)));
     if (showsUsual) usual.forEach(u => add(u.stopId, u.route, u.toStopId));
     return [...m.values()];
-  }, [visible, data, isNearby, nearbyStops, usual, showsUsual]);
+  }, [visible, data, isNearby, nearbyStops, usual, showsUsual, isLines, network, selectedLine]);
 
   const showOnMap = useCallback((target: { vehicle?: Vehicle; stopId?: string }) => {
     setFocus({ vehicleId: target.vehicle?.id, stopId: target.stopId, nonce: Date.now() });
@@ -395,6 +416,7 @@ export default function Home() {
     { id: NEXT, label: <><Zap className="mr-1 inline size-4 -translate-y-px" aria-hidden />Next up</> },
     { id: ALL, label: <>All journeys</> },
     { id: NEARBY, label: <><LocateFixed className="mr-1 inline size-4 -translate-y-px" aria-hidden />Nearby</> },
+    { id: LINES, label: <><Route className="mr-1 inline size-4 -translate-y-px" aria-hidden />All lines</> },
     {
       id: USUAL,
       label: (
@@ -512,6 +534,16 @@ export default function Home() {
                 <div key={i} className="h-56 animate-pulse rounded-2xl bg-surface" />
               ))}
             </div>
+          ) : isLines ? (
+            <LinesView
+              network={network}
+              failed={networkFailed}
+              vehicles={vehicles}
+              selected={selectedLine}
+              onSelect={setSelectedLine}
+              onShowMap={() => setMobileView('map')}
+              onShowStop={stopId => showOnMap({ stopId })}
+            />
           ) : isNext ? (
             journeys.length === 0 && usual.length === 0 ? (
               <div className="rounded-2xl border border-line bg-surface p-10 text-center shadow-card">
@@ -629,10 +661,12 @@ export default function Home() {
             {loaded && (
               <LiveMap
                 stops={mapStops}
-                vehicles={vehicles}
+                vehicles={mapVehicles}
                 focus={focus}
                 visibleKey={mobileView}
                 userPosition={isNearby ? geo.position : null}
+                network={isLines ? network?.lines : null}
+                highlightRoute={isLines ? selectedLine : null}
                 className="h-full w-full"
               />
             )}
