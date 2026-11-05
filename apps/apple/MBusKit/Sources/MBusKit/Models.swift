@@ -53,6 +53,8 @@ public struct Schedule: Codable, Hashable, Sendable {
   public var delay: Int?
   public var realtime: Bool?
   public var tripId: String?
+  /// Fleet number of the bus, from Marprom's live data; matches `Vehicle.busCode`.
+  public var busCode: String?
   public var arrivalTime: String?
   public var arrivalEpoch: Double?
   public var arrivalEstimated: Bool?
@@ -61,8 +63,8 @@ public struct Schedule: Codable, Hashable, Sendable {
   public var routeColor: String?
 
   public init(time: String, epoch: Double, scheduledTime: String? = nil, destination: String? = nil, delay: Int? = nil,
-              realtime: Bool? = nil, tripId: String? = nil, arrivalTime: String? = nil, arrivalEpoch: Double? = nil,
-              arrivalEstimated: Bool? = nil, route: String? = nil, routeColor: String? = nil) {
+              realtime: Bool? = nil, tripId: String? = nil, busCode: String? = nil, arrivalTime: String? = nil,
+              arrivalEpoch: Double? = nil, arrivalEstimated: Bool? = nil, route: String? = nil, routeColor: String? = nil) {
     self.time = time
     self.epoch = epoch
     self.scheduledTime = scheduledTime
@@ -70,6 +72,7 @@ public struct Schedule: Codable, Hashable, Sendable {
     self.delay = delay
     self.realtime = realtime
     self.tripId = tripId
+    self.busCode = busCode
     self.arrivalTime = arrivalTime
     self.arrivalEpoch = arrivalEpoch
     self.arrivalEstimated = arrivalEstimated
@@ -83,7 +86,14 @@ public struct Schedule: Codable, Hashable, Sendable {
 }
 
 public enum ScheduleSource: String, Codable, Sendable {
+  /// Marprom's real-time data (the stop boards), laid over the timetable.
+  case marpromLive = "marprom-live"
   case brezavta, marprom, none
+
+  /// Unknown values (a newer server) decode as `.none` instead of failing the whole response.
+  public init(from decoder: Decoder) throws {
+    self = ScheduleSource(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .none
+  }
 }
 
 public struct ScheduleResponse: Codable, Hashable, Sendable {
@@ -152,6 +162,8 @@ public struct Vehicle: Codable, Hashable, Identifiable, Sendable {
   public var heading: Double?
   public var headsign: String?
   public var tripId: String?
+  /// Fleet number; matches `Schedule.busCode`.
+  public var busCode: String?
   public var nextStop: String?
   public var timestamp: Double
 }

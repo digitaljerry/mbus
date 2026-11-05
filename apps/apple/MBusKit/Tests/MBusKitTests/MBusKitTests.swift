@@ -121,6 +121,19 @@ import Testing
     #expect(board.upcoming.count == 1)
   }
 
+  @Test func liveSourceAndBusCode() throws {
+    let json = """
+    {"stop":"461","route":"P17","routeColor":"#000","date":"2026-11-05",
+     "schedules":[{"time":"11:53","scheduledTime":"11:50","epoch":1793875980000,"delay":180,"realtime":true,"busCode":"126"}],
+     "source":"marprom-live"}
+    """
+    let r = try JSONDecoder().decode(ScheduleResponse.self, from: Data(json.utf8))
+    #expect(r.source == .marpromLive)
+    #expect(r.schedules.first?.busCode == "126")
+    let future = json.replacingOccurrences(of: "marprom-live", with: "something-new")
+    #expect(try JSONDecoder().decode(ScheduleResponse.self, from: Data(future.utf8)).source == ScheduleSource.none)
+  }
+
   @Test func partialStateDecodes() throws {
     let s = try JSONDecoder().decode(AppState.self, from: Data(#"{"usualBuses":[],"settings":{"keepAwake":false}}"#.utf8))
     #expect(s.journeys == Defaults.journeys)
