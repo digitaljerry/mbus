@@ -127,11 +127,12 @@ export default function AboutPage() {
         <section className="mt-10 space-y-3 text-sm leading-relaxed text-ink-2" aria-labelledby="data-heading">
           <h2 id="data-heading" className="text-base font-semibold text-ink">Where the data comes from</h2>
           <p>
-            Live arrivals, bus positions and route shapes come from{' '}
+            Live arrivals and bus positions come from Marprom&apos;s real-time system, the same one that drives the
+            arrival boards at stops. Departure lists and route shapes come from{' '}
             <a className="underline hover:text-ink" href="https://brezavta.si" target="_blank" rel="noopener noreferrer">brezavta.si</a>, built on
-            Marprom&apos;s public GTFS feed. When that feed is missing trips, MBus reads{' '}
-            <a className="underline hover:text-ink" href="https://vozniredi.marprom.si" target="_blank" rel="noopener noreferrer">Marprom&apos;s official timetable</a>{' '}
-            instead; those times are marked &ldquo;Scheduled&rdquo;. Map tiles: OpenFreeMap, © OpenStreetMap contributors.
+            Marprom&apos;s public GTFS feed, and when that feed is missing trips, from{' '}
+            <a className="underline hover:text-ink" href="https://vozniredi.marprom.si" target="_blank" rel="noopener noreferrer">Marprom&apos;s official timetable</a>.
+            Times without live data are marked &ldquo;Scheduled&rdquo;. Map tiles: OpenFreeMap, © OpenStreetMap contributors.
           </p>
           <p>
             Your journeys and usual buses are stored only in this browser. If you turn on reminders, the reminder

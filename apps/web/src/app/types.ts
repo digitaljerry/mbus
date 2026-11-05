@@ -23,6 +23,8 @@ export interface Schedule {
   delay?: number; // delay in seconds
   realtime?: boolean; // whether real-time data is available
   tripId?: string;
+  /** Fleet number of the bus, when Marprom's live data has assigned one. */
+  busCode?: string;
   /** Arrival at the journey's destination stop, when one is set. */
   arrivalTime?: string;
   arrivalEpoch?: number;
@@ -30,7 +32,12 @@ export interface Schedule {
   arrivalEstimated?: boolean;
 }
 
-export type ScheduleSource = 'brezavta' | 'marprom' | 'none';
+/**
+ * Where the departures come from: `marprom-live` is Marprom's real-time API
+ * (laid over the timetable), `brezavta` the GTFS-based API, `marprom` the
+ * printed timetable only.
+ */
+export type ScheduleSource = 'marprom-live' | 'brezavta' | 'marprom' | 'none';
 
 export interface ScheduleResponse {
   stop: string;
@@ -53,6 +60,11 @@ export interface ScheduleResponse {
   fetchedAt: number;
 }
 
+/** The bus serving a departure, from a map keyed by trip ID and `bus:<code>`. */
+export function vehicleFor(byKey: Map<string, Vehicle>, s: { tripId?: string; busCode?: string }): Vehicle | undefined {
+  return (s.busCode ? byKey.get(`bus:${s.busCode}`) : undefined) ?? (s.tripId ? byKey.get(s.tripId) : undefined);
+}
+
 export interface Vehicle {
   id: string;
   plate?: string;
@@ -63,6 +75,8 @@ export interface Vehicle {
   heading?: number;
   headsign?: string;
   tripId?: string;
+  /** Fleet number; matches `Schedule.busCode`. */
+  busCode?: string;
   nextStop?: string;
   timestamp: number;
 }

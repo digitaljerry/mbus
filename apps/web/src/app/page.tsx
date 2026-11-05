@@ -4,7 +4,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Bus, Info, LayoutList, LocateFixed, Map as MapIcon, RefreshCw, Settings2, Star, Sun, WifiOff, Zap } from 'lucide-react';
-import type { BusStop, Vehicle } from './types';
+import { vehicleFor, type BusStop, type Vehicle } from './types';
 import { loadPinnedStops, loadUsualBuses, savePinnedStops, saveUsualBuses } from './utils/storage';
 import { DEFAULT_STOPS, splitJourneyName } from './lib/defaults';
 import { ago, SECONDS_THRESHOLD_MS } from './lib/format';
@@ -220,7 +220,10 @@ export default function Home() {
 
   const vehiclesByTrip = useMemo(() => {
     const m = new Map<string, Vehicle>();
-    vehicles.forEach(v => v.tripId && m.set(v.tripId, v));
+    vehicles.forEach(v => {
+      if (v.tripId) m.set(v.tripId, v);
+      if (v.busCode) m.set(`bus:${v.busCode}`, v);
+    });
     return m;
   }, [vehicles]);
 
@@ -605,13 +608,13 @@ export default function Home() {
 
           <footer className="mt-10 space-y-1 pb-24 text-center text-xs text-ink-3 lg:pb-6">
             <p>
-              Live data from{' '}
-              <a className="underline hover:text-ink" href="https://brezavta.si" target="_blank" rel="noopener noreferrer">
-                brezavta.si
-              </a>
-              , timetables from{' '}
+              Live data and timetables from{' '}
               <a className="underline hover:text-ink" href="https://vozniredi.marprom.si" target="_blank" rel="noopener noreferrer">
                 Marprom
+              </a>
+              {' '}and{' '}
+              <a className="underline hover:text-ink" href="https://brezavta.si" target="_blank" rel="noopener noreferrer">
+                brezavta.si
               </a>
               . Map © OpenStreetMap contributors, OpenFreeMap.
             </p>
@@ -667,7 +670,7 @@ export default function Home() {
           current={trackedLive.current}
           journeyName={trackedLive.title}
           now={now}
-          vehicle={trackedLive.departure.schedule.tripId ? vehiclesByTrip.get(trackedLive.departure.schedule.tripId) : undefined}
+          vehicle={vehicleFor(vehiclesByTrip, trackedLive.departure.schedule)}
           wakeSupported={wake.supported}
           wakeHeld={wake.held}
           keepAwake={keepAwake}

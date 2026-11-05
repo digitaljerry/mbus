@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertTriangle, Bus, ChevronDown, ChevronRight, ChevronUp, MapPin, Moon, RefreshCw } from 'lucide-react';
-import type { BusStop, Schedule, ScheduleResponse, Vehicle } from '../types';
+import { vehicleFor, type BusStop, type Schedule, type ScheduleResponse, type Vehicle } from '../types';
 import { countdown, dayLabel, delayInfo } from '../lib/format';
 import { splitJourneyName } from '../lib/defaults';
 import { HOLIDAY_NOTICE, mayUseHolidayTimetable } from '../lib/holidays';
@@ -247,7 +247,7 @@ export default function JourneyCard({
                 ))}
               </ul>
             )}
-            <NextDeparture d={next} now={now} vehicle={next.schedule.tripId ? vehiclesByTrip.get(next.schedule.tripId) : undefined} onShowOnMap={onShowOnMap} onOpen={onOpen} />
+            <NextDeparture d={next} now={now} vehicle={vehicleFor(vehiclesByTrip, next.schedule)} onShowOnMap={onShowOnMap} onOpen={onOpen} />
             {later.length > 0 && (
               <ul className="mt-2 divide-y divide-line">
                 {later.map((d, i) => {
