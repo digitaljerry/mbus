@@ -363,7 +363,7 @@ export async function getRouteDepartures(
     lat: stopInfo.lat,
     lon: stopInfo.lon,
     route,
-    routeColor: liveColor ?? routeColor(route),
+    routeColor: routeColor(route, liveColor),
     date: today,
     schedules,
     url: source === 'brezavta' ? `${WEBSITE_BASE_URL}/stop/MARPROM:${stop}` : `${MARPROM_BASE_URL}/?stop=${stop}&datum=${today}`,
@@ -566,7 +566,7 @@ export async function getStopBoard(stop: string, { now = Date.now(), perRoute = 
       byDirection.get(k)!.push(s);
     });
     byDirection.forEach(l =>
-      l.slice(0, perRoute).forEach(s => departures.push({ ...s, route, routeColor: colors.get(route) ?? routeColor(route) }))
+      l.slice(0, perRoute).forEach(s => departures.push({ ...s, route, routeColor: routeColor(route, colors.get(route)) }))
     );
   }
   departures.sort((a, b) => a.epoch - b.epoch);

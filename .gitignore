@@ -16,3 +16,8 @@ DerivedData/
 .gradle/
 local.properties
 *.iml
+
+# Next.js output when run from the repo root by mistake (the app lives in apps/web)
+/.next/
+/next-env.d.ts
+/tsconfig.tsbuildinfo

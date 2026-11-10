@@ -256,7 +256,7 @@ export default function Home() {
     const add = (stopId: string, route: string, toStopId?: string) => {
       const resp = data[legKey(stopId, route, toStopId)];
       if (resp?.lat && resp.lon && !m.has(stopId)) {
-        m.set(stopId, { id: stopId, name: resp.stopName ?? `Stop ${stopId}`, lat: resp.lat, lon: resp.lon, color: resp.routeColor ?? routeColor(route) });
+        m.set(stopId, { id: stopId, name: resp.stopName ?? `Stop ${stopId}`, lat: resp.lat, lon: resp.lon, color: routeColor(route, resp.routeColor) });
       }
     };
     visible.forEach(j => j.stops.forEach(s => add(s.stopId, s.route, s.toStopId)));

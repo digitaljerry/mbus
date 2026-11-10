@@ -38,7 +38,7 @@ async function loadBrezavtaVehicles(): Promise<Vehicle[]> {
       id: v.vehicle!.id!,
       plate: v.vehicle?.plate,
       route: v.route_short_name!,
-      color: v.color && v.color !== '#000000' ? v.color : routeColor(v.route_short_name!),
+      color: routeColor(v.route_short_name!, v.color && v.color !== '#000000' ? v.color : undefined),
       lat: v.lat,
       lon: v.lon,
       heading: v.heading,

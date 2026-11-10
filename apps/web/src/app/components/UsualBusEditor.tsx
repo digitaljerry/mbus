@@ -37,7 +37,10 @@ export default function UsualBusEditor({ initial, isNew, push, onEnablePush, onT
 
   useEffect(() => {
     loadStopList().then(setStopList);
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+  }, []);
+  useEffect(() => {
+    // The stop picker prevents Escape when it only closes its result list.
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !e.defaultPrevented && onClose();
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
@@ -61,7 +64,7 @@ export default function UsualBusEditor({ initial, isNew, push, onEnablePush, onT
         <div className="mx-auto mt-2 h-1.5 w-10 rounded-full bg-line sm:hidden" aria-hidden />
         <header className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
           <div className="flex min-w-0 items-center gap-2">
-            <RouteBadge route={u.route} color={u.routeColor ?? routeColor(u.route)} size="md" />
+            <RouteBadge route={u.route} color={routeColor(u.route, u.routeColor)} size="md" />
             <h2 id="usual-title" className="truncate text-lg font-semibold">
               {isNew ? 'Make this your usual bus' : 'Usual bus'}
             </h2>

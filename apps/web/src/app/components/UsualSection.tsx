@@ -32,7 +32,7 @@ export function usualDeparture(u: UsualBus, data: Record<string, ScheduleRespons
       realtime: false,
     },
     route: u.route,
-    color: resp?.routeColor ?? u.routeColor ?? routeColor(u.route),
+    color: routeColor(u.route, resp?.routeColor ?? u.routeColor),
     stopId: u.stopId,
     stopName: resp?.stopName ?? u.stopName,
     toStopId: u.toStopId,
@@ -78,7 +78,7 @@ export default function UsualSection({ usual, data, now, onOpen, onEdit, editabl
                   onClick={() => d && onOpen(u, d)}
                   className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-left hover:bg-surface-2"
                 >
-                  <RouteBadge route={u.route} color={d?.color ?? u.routeColor ?? routeColor(u.route)} size="md" />
+                  <RouteBadge route={u.route} color={d?.color ?? routeColor(u.route, u.routeColor)} size="md" />
                   <div className="min-w-0 flex-1">
                     <p className="flex items-center gap-1.5 truncate text-sm font-semibold">
                       {u.label || `${u.time} from ${u.stopName ?? `stop ${u.stopId}`}`}
