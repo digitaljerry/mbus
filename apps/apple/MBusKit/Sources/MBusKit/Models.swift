@@ -122,13 +122,16 @@ public struct Stop: Codable, Hashable, Identifiable, Sendable {
   public var name: String
   public var lat: Double
   public var lon: Double
+  /// Lines that pick up at this stop (from the static network).
+  public var lines: [String]?
 
-  public init(id: String, code: String? = nil, name: String, lat: Double, lon: Double) {
+  public init(id: String, code: String? = nil, name: String, lat: Double, lon: Double, lines: [String]? = nil) {
     self.id = id
     self.code = code
     self.name = name
     self.lat = lat
     self.lon = lon
+    self.lines = lines
   }
 }
 

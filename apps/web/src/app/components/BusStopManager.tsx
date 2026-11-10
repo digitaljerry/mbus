@@ -15,6 +15,13 @@ export interface StopListItem {
   name: string;
   lat?: number;
   lon?: number;
+  /** Lines that pick up at this stop. */
+  lines?: string[];
+}
+
+interface Connections {
+  lines: string[];
+  alternatives: { from: string; to: string; lines: string[] }[];
 }
 
 interface Props {
@@ -101,6 +108,16 @@ export default function BusStopManager({ isOpen, journeys, onClose, onChange }: 
   };
 
   const canSave = Boolean(draft?.name.trim() && draft.stops.some(s => s.stopId.trim() && s.route.trim()));
+  // Say what's missing instead of leaving a silently disabled button.
+  const missing = !draft
+    ? null
+    : !draft.name.trim()
+      ? 'Add a name to save.'
+      : !draft.stops.some(s => s.stopId.trim())
+        ? 'Choose where you get on to save.'
+        : !draft.stops.some(s => s.stopId.trim() && s.route.trim())
+          ? 'Pick a line to save.'
+          : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4" role="presentation">
@@ -180,6 +197,7 @@ export default function BusStopManager({ isOpen, journeys, onClose, onChange }: 
                   Save journey
                 </button>
               </div>
+              {missing && <p className="-mt-2 text-right text-xs text-ink-3">{missing}</p>}
             </div>
           ) : (
             <>
@@ -277,6 +295,49 @@ function LegEditor({
   onChange: (leg: StopRoute) => void;
   onRemove: () => void;
 }) {
+  const byId = useMemo(() => new Map(stopList.map(s => [s.id, s])), [stopList]);
+  const [conn, setConn] = useState<(Connections & { key: string }) | null>(null);
+  const connKey = leg.stopId && leg.toStopId ? `${leg.stopId}>${leg.toStopId}` : '';
+
+  useEffect(() => {
+    if (!connKey) return;
+    let cancelled = false;
+    const [from, to] = connKey.split('>');
+    fetch(`/api/connections?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((c: Connections | null) => !cancelled && c && setConn({ ...c, key: connKey }))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [connKey]);
+
+  const current = conn?.key === connKey ? conn : null;
+  // Lines that fit: from → to when both are set, else everything that picks up here.
+  const fitting = connKey ? current?.lines : leg.stopId ? byId.get(leg.stopId)?.lines : undefined;
+  const fitKey = fitting?.join(',') ?? '';
+
+  // Only one line fits and none is picked yet: pick it.
+  const onChangeRef = useRef(onChange);
+  const legRef = useRef(leg);
+  useEffect(() => {
+    onChangeRef.current = onChange;
+    legRef.current = leg;
+  });
+  useEffect(() => {
+    const l = legRef.current;
+    if (fitting?.length === 1 && !l.route) onChangeRef.current({ ...l, route: fitting[0] });
+    // fitKey stands in for `fitting`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fitKey]);
+
+  const routes = [...KNOWN_ROUTES].sort((a, b) => Number(!fitting?.includes(a)) - Number(!fitting?.includes(b)));
+  const route = leg.route.toUpperCase();
+  const fromStop = byId.get(leg.stopId);
+  const toStop = leg.toStopId ? byId.get(leg.toStopId) : undefined;
+  const label = (s: StopListItem | undefined, id: string) => `${s?.name ?? 'Stop'} (${stopLabel(s, id)})`;
+  const alt = current && !current.lines.length ? current.alternatives[0] : undefined;
+
   return (
     <div className="rounded-2xl border border-line p-3">
       <div className="flex items-start gap-2">
@@ -296,29 +357,49 @@ function LegEditor({
         )}
       </div>
       <div className="mt-3">
-        <span className="text-xs font-medium text-ink-3">Line</span>
-        <div className="no-scrollbar -mx-1 mt-1 flex gap-1.5 overflow-x-auto px-1 pb-1">
-          {KNOWN_ROUTES.map(r => {
-            const active = leg.route.toUpperCase() === r;
+        <span className="text-xs font-medium text-ink-3">
+          Line
+          {fitting && fitting.length > 0 && (
+            <span className="font-normal">
+              {' '}
+              · {connKey ? 'to your stop' : 'stopping here'}: {fitting.join(', ')}
+            </span>
+          )}
+        </span>
+        {/* Wrap rather than scroll, so no line is hidden off-screen. */}
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {routes.map(r => {
+            const active = route === r;
+            // Nothing fits (wrong side of the street): the note below explains; don't dim everything.
+            const fits = !fitting?.length || fitting.includes(r);
             return (
               <button
                 key={r}
+                type="button"
                 onClick={() => onChange({ ...leg, route: r })}
                 aria-pressed={active}
-                className={`shrink-0 rounded-lg p-0.5 ring-2 ${active ? 'ring-ink' : 'ring-transparent opacity-60 hover:opacity-100'}`}
+                title={fits ? undefined : connKey ? `${r} doesn't go to your stop` : `${r} doesn't stop here`}
+                className={`shrink-0 rounded-lg p-0.5 ring-2 ${
+                  active ? 'ring-ink' : `ring-transparent hover:opacity-100 ${fits ? 'opacity-70' : 'opacity-25'}`
+                }`}
               >
                 <RouteBadge route={r} color={routeColor(r)} size="md" />
               </button>
             );
           })}
           <input
-            value={KNOWN_ROUTES.includes(leg.route.toUpperCase()) ? '' : leg.route}
+            value={KNOWN_ROUTES.includes(route) ? '' : leg.route}
             onChange={e => onChange({ ...leg, route: e.target.value.toUpperCase() })}
             placeholder="Other"
             aria-label="Other line"
             className="input h-8 w-20 shrink-0 py-0 text-sm"
           />
         </div>
+        {route && fitting && fitting.length > 0 && !fitting.includes(route) && (
+          <p className="mt-2 text-xs text-late">
+            {route} {connKey ? `doesn't run from ${fromStop?.name ?? 'here'} to ${toStop?.name ?? 'your stop'}` : `doesn't stop at ${fromStop?.name ?? 'this stop'}`}.
+          </p>
+        )}
       </div>
       <div className="mt-3">
         <StopPicker
@@ -330,6 +411,41 @@ function LegEditor({
           clearable
         />
       </div>
+      {current && !current.lines.length && (
+        <div className="mt-3 rounded-xl bg-surface-2 p-3 text-sm">
+          {alt ? (
+            <>
+              <p>
+                No line runs from {label(fromStop, leg.stopId)} to {label(toStop, leg.toStopId!)}.{' '}
+                {alt.from !== leg.stopId && alt.to !== leg.toStopId
+                  ? `${alt.lines.join(', ')} runs from ${label(byId.get(alt.from), alt.from)} to ${label(byId.get(alt.to), alt.to)}, the stops across the street.`
+                  : alt.from !== leg.stopId
+                    ? `${alt.lines.join(', ')} goes there from ${label(byId.get(alt.from), alt.from)}, across the street.`
+                    : `${alt.lines.join(', ')} stops at ${label(byId.get(alt.to), alt.to)} instead, across the street.`}
+              </p>
+              <button
+                type="button"
+                onClick={() =>
+                  onChange({
+                    ...leg,
+                    stopId: alt.from,
+                    toStopId: alt.to,
+                    route: alt.lines.includes(route) ? leg.route : alt.lines.length === 1 ? alt.lines[0] : '',
+                  })
+                }
+                className="mt-2 rounded-lg bg-accent px-3 py-1.5 text-sm font-semibold text-accent-ink"
+              >
+                Use{' '}
+                {[alt.from !== leg.stopId && stopLabel(byId.get(alt.from), alt.from), alt.to !== leg.toStopId && stopLabel(byId.get(alt.to), alt.to)]
+                  .filter(Boolean)
+                  .join(' → ')}
+              </button>
+            </>
+          ) : (
+            <p>No direct line runs between these stops. Check the get-off stop, or add it as two legs.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
