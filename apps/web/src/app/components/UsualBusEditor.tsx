@@ -37,7 +37,10 @@ export default function UsualBusEditor({ initial, isNew, push, onEnablePush, onT
 
   useEffect(() => {
     loadStopList().then(setStopList);
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+  }, []);
+  useEffect(() => {
+    // The stop picker prevents Escape when it only closes its result list.
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && !e.defaultPrevented && onClose();
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
